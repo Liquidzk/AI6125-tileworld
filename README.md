@@ -28,3 +28,12 @@ Run with `80x80`:
 ```powershell
 java "-Dtileworld.profile=config2" -cp "out;libs\MASON_14.jar" tileworld.TileworldMain
 ```
+
+## Sample Score
+
+Current `6-agent` version, `5000` steps, fixed seed `4162012`, single run:
+
+| Environment | Map Size | Score |
+|---|---:|---:|
+| Environment 1 | `50 x 50` | `590` |
+| Environment 2 | `80 x 80` | `980` |
