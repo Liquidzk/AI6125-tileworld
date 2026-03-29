@@ -1,0 +1,13 @@
+* text=auto
+
+*.java text eol=lf
+*.md text eol=lf
+*.prefs text eol=lf
+.project text eol=lf
+.classpath text eol=lf
+.gitattributes text eol=lf
+.gitignore text eol=lf
+
+*.jar binary
+*.pdf binary
+*.pptx binary
