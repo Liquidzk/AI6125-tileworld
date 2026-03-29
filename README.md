@@ -2,18 +2,16 @@
 
 ## Run
 
-Prerequisites:
-- Java JDK installed
-- `libs/MASON_14.jar` already present in this repo
+put mason.jar into libs
+- `libs/MASON_14.jar`
 
-Compile from source in PowerShell:
 
-```powershell
-New-Item -ItemType Directory -Force out | Out-Null
+```
+mkdir out/
 javac -cp "libs\MASON_14.jar" -d out (Get-ChildItem -Recurse src -Filter *.java | % FullName)
 ```
 
-Run the headless benchmark:
+Run the random 10-seeds benchmark:
 
 ```powershell
 java -cp "out;libs\MASON_14.jar" tileworld.TileworldMain
@@ -25,7 +23,7 @@ Run the GUI:
 java -cp "out;libs\MASON_14.jar" tileworld.TWGUI
 ```
 
-Run the second public configuration (`80x80`):
+Run with `80x80`:
 
 ```powershell
 java "-Dtileworld.profile=config2" -cp "out;libs\MASON_14.jar" tileworld.TileworldMain

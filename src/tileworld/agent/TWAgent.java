@@ -33,6 +33,7 @@ import tileworld.exceptions.CellBlockedException;
 public abstract class TWAgent extends TWEntity implements Steppable {
 
     protected int score;
+    private boolean outOfFuelReported;
 
     public int getScore() {
         return score;
@@ -42,6 +43,7 @@ public abstract class TWAgent extends TWEntity implements Steppable {
         super(xpos, ypos, env);
        
         this.score = 0;
+        this.outOfFuelReported = false;
         this.fuelLevel = fuelLevel;
         this.carriedTiles = new ArrayList<TWTile>();
         this.sensor = new TWAgentSensor(this, Parameters.defaultSensorRange);
@@ -98,10 +100,14 @@ public abstract class TWAgent extends TWEntity implements Steppable {
     @Override
     protected void move(TWDirection d) throws CellBlockedException {
         if (fuelLevel <= 0) {
-        	System.out.println("Agent ran out of fuel, Score: " + this.score);
+            if (!outOfFuelReported) {
+                System.out.println("Agent ran out of fuel, Score: " + this.score);
+                outOfFuelReported = true;
+            }
             //Bad news, causes runtime exception
             //throw new InsufficientFuelException("Agent ran out of fuel, Score: " + this.score);
         } else {
+            outOfFuelReported = false;
         	moveDir(d);
         }
     }

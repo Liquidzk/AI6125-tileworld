@@ -96,6 +96,10 @@ public class StrategicTWAgentMemory extends TWAgentWorkingMemory {
         return fuelStation;
     }
 
+    public void rememberFuelStation(int x, int y) {
+        fuelStation = new KnownTarget(TargetType.FUEL_STATION, x, y, currentTime(), Double.POSITIVE_INFINITY);
+    }
+
     public double getObservationAge(KnownTarget target) {
         return target == null ? Double.MAX_VALUE : currentTime() - target.getObservedAt();
     }

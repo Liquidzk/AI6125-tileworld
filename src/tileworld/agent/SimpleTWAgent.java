@@ -19,10 +19,14 @@ import tileworld.planners.TWPathStep;
 
 public class SimpleTWAgent extends TWAgent {
 
+    private static final boolean LARGE_MAP = Parameters.xDimension >= 80 || Parameters.yDimension >= 80;
+    private static final boolean TEAM_MODE = Parameters.agentCount > 1;
     private static final int MAX_CARRIED_TILES = 3;
     private static final int EXPLORATION_STRIDE = Parameters.defaultSensorRange * 2 + 1;
-    private static final int FUEL_BUFFER = 36;
-    private static final int PRE_FUEL_TARGET_RADIUS = 6;
+    private static final int FUEL_BUFFER = LARGE_MAP ? 70 : 36;
+    private static final int PRE_FUEL_TARGET_RADIUS = LARGE_MAP ? 4 : 6;
+    private static final int PRE_FUEL_BUDGET_BUFFER = LARGE_MAP ? 65 : 45;
+    private static final int PATH_SAFETY_MARGIN = LARGE_MAP ? 18 : 10;
     private static final double MAX_MEMORY_TARGET_AGE = 20.0;
     private static final double TILE_AGE_WEIGHT = 0.30;
     private static final double HOLE_AGE_WEIGHT = 0.30;
@@ -30,6 +34,9 @@ public class SimpleTWAgent extends TWAgent {
     private static final double HOLE_PRIORITY_BONUS = 1.1;
     private static final int EXTRA_TILE_DETOUR = 3;
     private static final int FORCE_DELIVERY_AT_TILES = 2;
+    private static final double SECTOR_PENALTY_WEIGHT = TEAM_MODE ? 0.45 : 0.0;
+    private static final Object TEAM_STATE_LOCK = new Object();
+    private static Int2D sharedFuelStation;
 
     private enum GoalMode {
         TILE,
@@ -38,6 +45,9 @@ public class SimpleTWAgent extends TWAgent {
         EXPLORE
     }
 
+    private final int agentIndex;
+    private final int sectorStartX;
+    private final int sectorEndX;
     private final String name;
     private final StrategicTWAgentMemory strategicMemory;
     private final AstarPathGenerator pathGenerator;
@@ -49,23 +59,43 @@ public class SimpleTWAgent extends TWAgent {
     private List<Int2D> explorationWaypoints;
     private int explorationIndex;
 
-    public SimpleTWAgent(String name, int xpos, int ypos, TWEnvironment env, double fuelLevel) {
+    public SimpleTWAgent(int agentIndex, String name, int xpos, int ypos, TWEnvironment env, double fuelLevel) {
         super(xpos, ypos, env, fuelLevel);
+        this.agentIndex = Math.max(0, agentIndex);
         this.name = name;
         this.strategicMemory = new StrategicTWAgentMemory(this, env.schedule, env.getxDimension(), env.getyDimension());
         this.memory = this.strategicMemory;
         this.pathGenerator = new AstarPathGenerator(env, this, env.getxDimension() * env.getyDimension());
         this.currentMode = GoalMode.EXPLORE;
         this.explorationIndex = 0;
+        int[] sector = computeSectorBounds(env.getxDimension(), this.agentIndex);
+        this.sectorStartX = sector[0];
+        this.sectorEndX = sector[1];
     }
 
     public static SimpleTWAgent createAgent(int index, int xpos, int ypos, TWEnvironment env, double fuelLevel) {
-        return new SimpleTWAgent("agent" + index, xpos, ypos, env, fuelLevel);
+        return new SimpleTWAgent(index - 1, "agent" + index, xpos, ypos, env, fuelLevel);
+    }
+
+    public static void resetSharedState() {
+        synchronized (TEAM_STATE_LOCK) {
+            sharedFuelStation = null;
+        }
     }
 
     @Override
     public String getName() {
         return name;
+    }
+
+    @Override
+    public void communicate() {
+        KnownTarget fuelStation = strategicMemory.getFuelStation();
+        if (fuelStation != null) {
+            publishFuelStation(fuelStation);
+        } else {
+            syncSharedFuelStation();
+        }
     }
 
     @Override
@@ -123,6 +153,7 @@ public class SimpleTWAgent extends TWAgent {
     }
 
     private TWDirection chooseDirection() {
+        syncSharedFuelStation();
         KnownTarget fuelStation = strategicMemory.getFuelStation();
         KnownTarget tileTarget = selectTileTarget();
         KnownTarget holeTarget = selectHoleTarget();
@@ -161,11 +192,11 @@ public class SimpleTWAgent extends TWAgent {
             return false;
         }
 
-        int distanceToFuel = distanceTo(fuelStation);
+        int distanceToFuel = travelDistanceTo(fuelStation);
         int reserve = FUEL_BUFFER + (currentMode == GoalMode.EXPLORE ? EXPLORATION_STRIDE / 2 : 0);
         if (hasTile() && holeTarget != null) {
-            int distanceViaHole = distanceTo(holeTarget)
-                    + manhattanDistance(holeTarget.getX(), holeTarget.getY(), fuelStation.getX(), fuelStation.getY());
+            int distanceViaHole = travelDistanceTo(holeTarget)
+                    + estimatedPathDistance(holeTarget.getX(), holeTarget.getY(), fuelStation.getX(), fuelStation.getY());
             return getFuelLevel() <= distanceViaHole + reserve;
         }
 
@@ -225,6 +256,7 @@ public class SimpleTWAgent extends TWAgent {
         score += 0.6 * nearestKnownHoleDistance(tile);
         score += TILE_AGE_WEIGHT * strategicMemory.getObservationAge(tile);
         score -= TILE_PRIORITY_BONUS * Math.max(1, MAX_CARRIED_TILES - carriedTiles.size());
+        score += sectorPenalty(tile);
         return score;
     }
 
@@ -232,6 +264,7 @@ public class SimpleTWAgent extends TWAgent {
         double score = distanceTo(hole) - carriedTiles.size();
         score += HOLE_AGE_WEIGHT * strategicMemory.getObservationAge(hole);
         score -= HOLE_PRIORITY_BONUS * Math.max(1, carriedTiles.size());
+        score += sectorPenalty(hole);
         return score;
     }
 
@@ -242,7 +275,13 @@ public class SimpleTWAgent extends TWAgent {
         if (target.getExpiresAt() <= currentTime()) {
             return false;
         }
-        if (target.getType() != TargetType.FUEL_STATION && target.getExpiresAt() < currentTime() + distanceTo(target) + 1) {
+        int lowerBoundDistance = distanceTo(target);
+        if (target.getType() != TargetType.FUEL_STATION && target.getExpiresAt() < currentTime() + lowerBoundDistance + 1) {
+            return false;
+        }
+        if (target.getType() != TargetType.FUEL_STATION
+                && target.getExpiresAt() < currentTime() + lowerBoundDistance + PATH_SAFETY_MARGIN + 1
+                && target.getExpiresAt() < currentTime() + travelDistanceTo(target) + 1) {
             return false;
         }
         if (!hasFuelBudgetFor(target, fuelStation)) {
@@ -273,11 +312,18 @@ public class SimpleTWAgent extends TWAgent {
 
         int toTarget = distanceTo(target);
         if (fuelStation == null) {
-            return getFuelLevel() > toTarget + FUEL_BUFFER;
+            return getFuelLevel() > toTarget + PRE_FUEL_BUDGET_BUFFER;
         }
 
-        int toFuelAfterTarget = manhattanDistance(target.getX(), target.getY(), fuelStation.getX(), fuelStation.getY());
-        return getFuelLevel() > toTarget + toFuelAfterTarget + FUEL_BUFFER;
+        int optimisticTotal = toTarget
+                + manhattanDistance(target.getX(), target.getY(), fuelStation.getX(), fuelStation.getY())
+                + FUEL_BUFFER;
+        if (getFuelLevel() > optimisticTotal + PATH_SAFETY_MARGIN) {
+            return true;
+        }
+
+        int toFuelAfterTarget = estimatedPathDistance(target.getX(), target.getY(), fuelStation.getX(), fuelStation.getY());
+        return getFuelLevel() > travelDistanceTo(target) + toFuelAfterTarget + FUEL_BUFFER;
     }
 
     private boolean isCurrentOrRecent(KnownTarget target) {
@@ -293,8 +339,25 @@ public class SimpleTWAgent extends TWAgent {
         return manhattanDistance(getX(), getY(), target.getX(), target.getY());
     }
 
+    private int travelDistanceTo(KnownTarget target) {
+        return estimatedPathDistance(getX(), getY(), target.getX(), target.getY());
+    }
+
     private int manhattanDistance(int x1, int y1, int x2, int y2) {
         return Math.abs(x1 - x2) + Math.abs(y1 - y2);
+    }
+
+    private int estimatedPathDistance(int startX, int startY, int targetX, int targetY) {
+        if (startX == targetX && startY == targetY) {
+            return 0;
+        }
+
+        TWPath path = pathGenerator.findPath(startX, startY, targetX, targetY);
+        if (path != null) {
+            return path.getpath().size();
+        }
+
+        return manhattanDistance(startX, startY, targetX, targetY) + EXPLORATION_STRIDE;
     }
 
     private double currentTime() {
@@ -441,11 +504,12 @@ public class SimpleTWAgent extends TWAgent {
     }
 
     private void buildSweepWaypoints() {
-        int maxX = this.getEnvironment().getxDimension() - 1;
+        int minX = sectorStartX;
+        int maxX = sectorEndX;
         int maxY = this.getEnvironment().getyDimension() - 1;
         boolean topToBottom = true;
 
-        for (int x = 0; x <= maxX; x += EXPLORATION_STRIDE) {
+        for (int x = minX; x <= maxX; x += EXPLORATION_STRIDE) {
             explorationWaypoints.add(new Int2D(x, topToBottom ? 0 : maxY));
             explorationWaypoints.add(new Int2D(x, topToBottom ? maxY : 0));
             topToBottom = !topToBottom;
@@ -491,5 +555,58 @@ public class SimpleTWAgent extends TWAgent {
         if (!explorationWaypoints.isEmpty()) {
             explorationIndex = (explorationIndex + 1) % explorationWaypoints.size();
         }
+    }
+
+    private void publishFuelStation(KnownTarget fuelStation) {
+        if (fuelStation == null) {
+            return;
+        }
+        synchronized (TEAM_STATE_LOCK) {
+            sharedFuelStation = new Int2D(fuelStation.getX(), fuelStation.getY());
+        }
+    }
+
+    private void syncSharedFuelStation() {
+        Int2D teamFuel;
+        synchronized (TEAM_STATE_LOCK) {
+            teamFuel = sharedFuelStation;
+        }
+        if (teamFuel != null && strategicMemory.getFuelStation() == null) {
+            strategicMemory.rememberFuelStation(teamFuel.x, teamFuel.y);
+        }
+    }
+
+    private double sectorPenalty(KnownTarget target) {
+        if (!TEAM_MODE || target == null) {
+            return 0.0;
+        }
+        return distanceOutsideSector(target.getX()) * SECTOR_PENALTY_WEIGHT;
+    }
+
+    private int distanceOutsideSector(int x) {
+        if (x < sectorStartX) {
+            return sectorStartX - x;
+        }
+        if (x > sectorEndX) {
+            return x - sectorEndX;
+        }
+        return 0;
+    }
+
+    private int[] computeSectorBounds(int width, int index) {
+        if (!TEAM_MODE) {
+            return new int[]{0, width - 1};
+        }
+
+        int teamSize = Math.max(1, Parameters.agentCount);
+        int start = (index * width) / teamSize;
+        int end = (((index + 1) * width) / teamSize) - 1;
+        if (index >= teamSize - 1) {
+            end = width - 1;
+        }
+        if (end < start) {
+            end = start;
+        }
+        return new int[]{start, end};
     }
 }

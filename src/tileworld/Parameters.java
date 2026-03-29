@@ -23,7 +23,7 @@ public class Parameters {
     public static final long endTime = longProperty("tileworld.endTime", 5000); //no effect with gui
 
     //Agent Parameters
-    public static final int agentCount = intProperty("tileworld.agentCount", 1);
+    public static final int agentCount = intProperty("tileworld.agentCount", 6);
     public static final int defaultFuelLevel = intProperty("tileworld.defaultFuelLevel", 500);
     public static final int defaultSensorRange = intProperty("tileworld.defaultSensorRange", 3);
 
