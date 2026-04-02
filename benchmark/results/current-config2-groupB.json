@@ -1,0 +1,38 @@
+{
+    "label":  "current-config2-groupB",
+    "workspace":  "C:\\Users\\Liquid\\Downloads\\Tileworld\\Tileworld",
+    "profile":  "config2",
+    "groups":  [
+                   {
+                       "group":  "groupB",
+                       "seeds":  [
+                                     1214076455,
+                                     1913182960,
+                                     1395393034,
+                                     687670178,
+                                     650138429,
+                                     434178891,
+                                     791907865,
+                                     1562796943,
+                                     529934541,
+                                     1402886736
+                                 ],
+                       "rewards":  [
+                                       996,
+                                       1052,
+                                       1033,
+                                       969,
+                                       1037,
+                                       993,
+                                       982,
+                                       1040,
+                                       1010,
+                                       1051
+                                   ],
+                       "average":  1016.3,
+                       "min":  969,
+                       "max":  1052
+                   }
+               ],
+    "overallAverage":  1016.3
+}

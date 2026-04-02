@@ -5,6 +5,7 @@ import java.util.List;
 import sim.util.Int2D;
 import tileworld.Parameters;
 import tileworld.agent.StrategicTWAgentMemory.KnownTarget;
+import tileworld.agent.StrategicTWAgentMemory.SectorState;
 import tileworld.agent.StrategicTWAgentMemory.TargetType;
 import tileworld.environment.TWDirection;
 import tileworld.environment.TWEntity;
@@ -41,6 +42,13 @@ public class SimpleTWAgent extends TWAgent {
     private static final double TARGET_SLACK_WEIGHT = 0.12;
     private static final double TILE_CLUSTER_BONUS = 0.20;
     private static final double HOLE_CLUSTER_BONUS = 0.30;
+    private static final double SECTOR_FRESHNESS_WEIGHT = LARGE_MAP ? 1.8 : 1.2;
+    private static final double SECTOR_TILE_OPPORTUNITY_WEIGHT = 1.0;
+    private static final double SECTOR_HOLE_OPPORTUNITY_WEIGHT = 0.7;
+    private static final double SECTOR_DELIVERY_WEIGHT = 1.6;
+    private static final double SECTOR_PAIR_WEIGHT = 1.1;
+    private static final double SECTOR_TRAVEL_WEIGHT = LARGE_MAP ? 1.25 : 1.0;
+    private static final double SECTOR_STAY_BONUS = 4.0;
     private static final double TILE_SECTOR_PENALTY_WEIGHT = TEAM_MODE ? (LARGE_MAP ? 0.80 : 0.55) : 0.0;
     private static final double HOLE_SECTOR_PENALTY_WEIGHT = TEAM_MODE ? 0.18 : 0.0;
     private static final Object TEAM_STATE_LOCK = new Object();
@@ -63,6 +71,8 @@ public class SimpleTWAgent extends TWAgent {
     private GoalMode currentMode;
     private KnownTarget currentTarget;
     private TWPath currentPath;
+    private SectorState currentExploreSector;
+    private boolean usingSectorExploration;
     private Int2D currentExploreTarget;
     private List<Int2D> explorationWaypoints;
     private int explorationIndex;
@@ -469,18 +479,65 @@ public class SimpleTWAgent extends TWAgent {
     }
 
     private TWDirection followExplorationGoal() {
+        if (!shouldUseSectorExploration()) {
+            return followMacroSweepExploration();
+        }
+
         ensureExplorationWaypoints();
         currentMode = GoalMode.EXPLORE;
         currentTarget = null;
 
-        if (explorationWaypoints.isEmpty()) {
+        for (int sectorAttempt = 0; sectorAttempt < 2; sectorAttempt++) {
+            if (explorationWaypoints == null || explorationIndex >= explorationWaypoints.size()) {
+                clearExplorationPlan();
+                ensureExplorationWaypoints();
+            }
+
+            if (explorationWaypoints == null || explorationWaypoints.isEmpty() || explorationIndex >= explorationWaypoints.size()) {
+                return chooseFallbackDirection(currentExploreTarget);
+            }
+
+            while (explorationIndex < explorationWaypoints.size()) {
+                Int2D waypoint = explorationWaypoints.get(explorationIndex);
+                if (waypoint.x == getX() && waypoint.y == getY()) {
+                    advanceExplorationIndex();
+                    continue;
+                }
+
+                if (!waypoint.equals(currentExploreTarget)) {
+                    currentExploreTarget = waypoint;
+                    currentPath = null;
+                }
+
+                TWDirection direction = nextDirectionTo(waypoint.x, waypoint.y);
+                if (direction != TWDirection.Z) {
+                    return direction;
+                }
+
+                advanceExplorationIndex();
+                currentExploreTarget = null;
+                currentPath = null;
+            }
+        }
+
+        clearExplorationPlan();
+        return chooseFallbackDirection(currentExploreTarget);
+    }
+
+    private TWDirection followMacroSweepExploration() {
+        ensureMacroSweepWaypoints();
+        currentMode = GoalMode.EXPLORE;
+        currentTarget = null;
+        currentExploreSector = null;
+
+        if (explorationWaypoints == null || explorationWaypoints.isEmpty()) {
             return TWDirection.Z;
         }
 
         for (int attempt = 0; attempt < explorationWaypoints.size(); attempt++) {
             Int2D waypoint = explorationWaypoints.get(explorationIndex);
             if (waypoint.x == getX() && waypoint.y == getY()) {
-                advanceExplorationIndex();
+                advanceMacroExplorationIndex();
                 continue;
             }
 
@@ -494,7 +551,7 @@ public class SimpleTWAgent extends TWAgent {
                 return direction;
             }
 
-            advanceExplorationIndex();
+            advanceMacroExplorationIndex();
             currentExploreTarget = null;
             currentPath = null;
         }
@@ -570,18 +627,132 @@ public class SimpleTWAgent extends TWAgent {
     }
 
     private void ensureExplorationWaypoints() {
-        if (explorationWaypoints != null && !explorationWaypoints.isEmpty()) {
+        if (!shouldUseSectorExploration()) {
+            ensureMacroSweepWaypoints();
             return;
         }
 
+        if (explorationWaypoints != null && explorationIndex < explorationWaypoints.size()) {
+            return;
+        }
+
+        SectorState nextSector = selectExplorationSector();
+        if (nextSector == null) {
+            explorationWaypoints = null;
+            explorationIndex = 0;
+            currentExploreSector = null;
+            currentExploreTarget = null;
+            currentPath = null;
+            return;
+        }
+
+        currentExploreSector = nextSector;
         explorationWaypoints = new ArrayList<Int2D>();
-        buildSweepWaypoints();
+        buildSectorSweepWaypoints(nextSector);
         explorationIndex = explorationWaypoints.isEmpty() ? 0 : findClosestWaypointIndex(explorationWaypoints);
         currentExploreTarget = null;
         currentPath = null;
     }
 
-    private void buildSweepWaypoints() {
+    private void ensureMacroSweepWaypoints() {
+        if (!usingSectorExploration && explorationWaypoints != null && !explorationWaypoints.isEmpty()) {
+            return;
+        }
+
+        usingSectorExploration = false;
+        currentExploreSector = null;
+        explorationWaypoints = new ArrayList<Int2D>();
+        buildMacroSweepWaypoints();
+        explorationIndex = explorationWaypoints.isEmpty() ? 0 : findClosestWaypointIndex(explorationWaypoints);
+        currentExploreTarget = null;
+        currentPath = null;
+    }
+
+    private SectorState selectExplorationSector() {
+        KnownTarget fuelStation = strategicMemory.getFuelStation();
+        SectorState bestSector = null;
+        double bestScore = Double.NEGATIVE_INFINITY;
+
+        for (SectorState sector : strategicMemory.getSectorsOverlappingXRange(sectorStartX, sectorEndX)) {
+            double score = scoreExplorationSector(sector, fuelStation);
+            if (score > bestScore) {
+                bestScore = score;
+                bestSector = sector;
+            }
+        }
+
+        return bestSector;
+    }
+
+    private boolean shouldUseSectorExploration() {
+        return LARGE_MAP && strategicMemory.getFuelStation() != null;
+    }
+
+    private double scoreExplorationSector(SectorState sector, KnownTarget fuelStation) {
+        if (sector == null) {
+            return Double.NEGATIVE_INFINITY;
+        }
+
+        int centerX = sector.getCenterX();
+        int centerY = sector.getCenterY();
+        int travelDistance = estimatedPathDistance(getX(), getY(), centerX, centerY);
+        if (!hasExplorationFuelBudget(sector, fuelStation, travelDistance)) {
+            return Double.NEGATIVE_INFINITY;
+        }
+
+        int tileCount = sector.getKnownTileCount();
+        int holeCount = sector.getKnownHoleCount();
+        double freshness = sector.getFreshness(currentTime());
+        double opportunity = tileCount * SECTOR_TILE_OPPORTUNITY_WEIGHT
+                + holeCount * (hasTile() ? SECTOR_HOLE_OPPORTUNITY_WEIGHT + carriedTiles.size() * 0.35 : 0.45)
+                + Math.min(tileCount, holeCount) * SECTOR_PAIR_WEIGHT;
+        if (hasTile()) {
+            opportunity += Math.min(carriedTiles.size(), holeCount) * SECTOR_DELIVERY_WEIGHT;
+        }
+        if (!hasTile() && tileCount == 0 && holeCount > 0) {
+            opportunity -= holeCount * 0.8;
+        }
+
+        double score = freshness * SECTOR_FRESHNESS_WEIGHT
+                + opportunity
+                - travelDistance * SECTOR_TRAVEL_WEIGHT;
+        if (sameSector(currentExploreSector, sector)) {
+            score += SECTOR_STAY_BONUS;
+        }
+        return score;
+    }
+
+    private boolean hasExplorationFuelBudget(SectorState sector, KnownTarget fuelStation, int travelDistance) {
+        int sweepBudget = Math.max(sector.getMaxX() - sector.getMinX(), sector.getMaxY() - sector.getMinY()) / 2;
+        if (fuelStation == null) {
+            return getFuelLevel() > travelDistance + sweepBudget + PRE_FUEL_BUDGET_BUFFER;
+        }
+
+        int toFuel = estimatedPathDistance(sector.getCenterX(), sector.getCenterY(), fuelStation.getX(), fuelStation.getY());
+        return getFuelLevel() > travelDistance + sweepBudget + toFuel + FUEL_BUFFER;
+    }
+
+    private void buildSectorSweepWaypoints(SectorState sector) {
+        usingSectorExploration = true;
+        int minX = sector.getMinX();
+        int maxX = sector.getMaxX();
+        int minY = sector.getMinY();
+        int maxY = sector.getMaxY();
+        boolean topToBottom = true;
+
+        for (int x = minX; x <= maxX; x += EXPLORATION_STRIDE) {
+            explorationWaypoints.add(new Int2D(x, topToBottom ? minY : maxY));
+            explorationWaypoints.add(new Int2D(x, topToBottom ? maxY : minY));
+            topToBottom = !topToBottom;
+        }
+
+        if (explorationWaypoints.isEmpty() || explorationWaypoints.get(explorationWaypoints.size() - 1).x != maxX) {
+            explorationWaypoints.add(new Int2D(maxX, topToBottom ? minY : maxY));
+            explorationWaypoints.add(new Int2D(maxX, topToBottom ? maxY : minY));
+        }
+    }
+
+    private void buildMacroSweepWaypoints() {
         int minX = sectorStartX;
         int maxX = sectorEndX;
         int maxY = this.getEnvironment().getyDimension() - 1;
@@ -633,9 +804,18 @@ public class SimpleTWAgent extends TWAgent {
     }
 
     private void advanceExplorationIndex() {
-        if (!explorationWaypoints.isEmpty()) {
-            explorationIndex = (explorationIndex + 1) % explorationWaypoints.size();
+        if (explorationWaypoints != null && explorationIndex < explorationWaypoints.size()) {
+            explorationIndex++;
         }
+    }
+
+    private void clearExplorationPlan() {
+        currentExploreSector = null;
+        usingSectorExploration = false;
+        explorationWaypoints = null;
+        explorationIndex = 0;
+        currentExploreTarget = null;
+        currentPath = null;
     }
 
     private void publishFuelStation(KnownTarget fuelStation) {
@@ -666,6 +846,19 @@ public class SimpleTWAgent extends TWAgent {
             weight *= 1.25;
         }
         return distanceOutsideSector(target.getX()) * weight;
+    }
+
+    private boolean sameSector(SectorState left, SectorState right) {
+        return left != null
+                && right != null
+                && left.getSectorX() == right.getSectorX()
+                && left.getSectorY() == right.getSectorY();
+    }
+
+    private void advanceMacroExplorationIndex() {
+        if (explorationWaypoints != null && !explorationWaypoints.isEmpty()) {
+            explorationIndex = (explorationIndex + 1) % explorationWaypoints.size();
+        }
     }
 
     private int countNearbyTargets(TargetType type, KnownTarget center, int radius) {

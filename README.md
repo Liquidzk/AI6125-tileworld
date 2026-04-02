@@ -31,9 +31,9 @@ java "-Dtileworld.profile=config2" -cp "out;libs\MASON_14.jar" tileworld.Tilewor
 
 ## Sample Score
 
-Current `6-agent` version, `5000` steps, `10` random seeds, average score:
+Current `6-agent` version, `5000` steps, fixed benchmark set from `benchmark/seed-groups.json`:
 
 | Environment | Map Size | Score |
 |---|---:|---:|
-| Environment 1 | `50 x 50` | `617.1` |
-| Environment 2 | `80 x 80` | `977.5` |
+| Environment 1 | `50 x 50` | `607.0` |
+| Environment 2 | `80 x 80` | `1026.57` |

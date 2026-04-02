@@ -17,6 +17,8 @@ import tileworld.environment.TWTile;
 
 public class StrategicTWAgentMemory extends TWAgentWorkingMemory {
 
+    public static final int DEFAULT_SECTOR_SIZE = 10;
+
     public enum TargetType {
         TILE,
         HOLE,
@@ -59,10 +61,101 @@ public class StrategicTWAgentMemory extends TWAgentWorkingMemory {
         }
     }
 
+    public static final class SectorState {
+        private final int sectorX;
+        private final int sectorY;
+        private final int minX;
+        private final int maxX;
+        private final int minY;
+        private final int maxY;
+        private double lastSeenAt;
+        private int knownTileCount;
+        private int knownHoleCount;
+
+        private SectorState(int sectorX, int sectorY, int minX, int maxX, int minY, int maxY) {
+            this.sectorX = sectorX;
+            this.sectorY = sectorY;
+            this.minX = minX;
+            this.maxX = maxX;
+            this.minY = minY;
+            this.maxY = maxY;
+            this.lastSeenAt = -1.0;
+        }
+
+        public int getSectorX() {
+            return sectorX;
+        }
+
+        public int getSectorY() {
+            return sectorY;
+        }
+
+        public int getMinX() {
+            return minX;
+        }
+
+        public int getMaxX() {
+            return maxX;
+        }
+
+        public int getMinY() {
+            return minY;
+        }
+
+        public int getMaxY() {
+            return maxY;
+        }
+
+        public int getCenterX() {
+            return (minX + maxX) / 2;
+        }
+
+        public int getCenterY() {
+            return (minY + maxY) / 2;
+        }
+
+        public double getLastSeenAt() {
+            return lastSeenAt;
+        }
+
+        public double getFreshness(double now) {
+            return lastSeenAt < 0 ? now + 1.0 : Math.max(0.0, now - lastSeenAt);
+        }
+
+        public int getKnownTileCount() {
+            return knownTileCount;
+        }
+
+        public int getKnownHoleCount() {
+            return knownHoleCount;
+        }
+
+        private void markSeen(double time) {
+            lastSeenAt = time;
+        }
+
+        private void clearKnownTargets() {
+            knownTileCount = 0;
+            knownHoleCount = 0;
+        }
+
+        private void addKnownTarget(TargetType type) {
+            if (type == TargetType.TILE) {
+                knownTileCount++;
+            } else if (type == TargetType.HOLE) {
+                knownHoleCount++;
+            }
+        }
+    }
+
     private final TWAgent agent;
     private final Schedule schedule;
     private final Map<Long, KnownTarget> knownTiles;
     private final Map<Long, KnownTarget> knownHoles;
+    private final int sectorSize;
+    private final int sectorColumns;
+    private final int sectorRows;
+    private final SectorState[][] sectors;
     private KnownTarget fuelStation;
 
     public StrategicTWAgentMemory(TWAgent agent, Schedule schedule, int xDimension, int yDimension) {
@@ -71,6 +164,11 @@ public class StrategicTWAgentMemory extends TWAgentWorkingMemory {
         this.schedule = schedule;
         this.knownTiles = new HashMap<Long, KnownTarget>();
         this.knownHoles = new HashMap<Long, KnownTarget>();
+        this.sectorSize = DEFAULT_SECTOR_SIZE;
+        this.sectorColumns = (int) Math.ceil((double) xDimension / sectorSize);
+        this.sectorRows = (int) Math.ceil((double) yDimension / sectorSize);
+        this.sectors = new SectorState[sectorColumns][sectorRows];
+        initialiseSectors(xDimension, yDimension);
     }
 
     @Override
@@ -85,6 +183,9 @@ public class StrategicTWAgentMemory extends TWAgentWorkingMemory {
                 rememberObservedEntity((TWEntity) object, currentTime());
             }
         }
+
+        markVisibleSectors();
+        rebuildSectorKnowledge();
     }
 
     public List<KnownTarget> getKnownTargets(TargetType type) {
@@ -98,6 +199,20 @@ public class StrategicTWAgentMemory extends TWAgentWorkingMemory {
 
     public void rememberFuelStation(int x, int y) {
         fuelStation = new KnownTarget(TargetType.FUEL_STATION, x, y, currentTime(), Double.POSITIVE_INFINITY);
+    }
+
+    public List<SectorState> getSectorsOverlappingXRange(int minX, int maxX) {
+        List<SectorState> overlapping = new ArrayList<SectorState>();
+        for (int sectorX = 0; sectorX < sectorColumns; sectorX++) {
+            for (int sectorY = 0; sectorY < sectorRows; sectorY++) {
+                SectorState sector = sectors[sectorX][sectorY];
+                if (sector.getMaxX() < minX || sector.getMinX() > maxX) {
+                    continue;
+                }
+                overlapping.add(sector);
+            }
+        }
+        return overlapping;
     }
 
     public double getObservationAge(KnownTarget target) {
@@ -232,5 +347,53 @@ public class StrategicTWAgentMemory extends TWAgentWorkingMemory {
 
     private long longKey(int x, int y) {
         return (((long) x) << 32) | (y & 0xffffffffL);
+    }
+
+    private void initialiseSectors(int xDimension, int yDimension) {
+        for (int sectorX = 0; sectorX < sectorColumns; sectorX++) {
+            for (int sectorY = 0; sectorY < sectorRows; sectorY++) {
+                int minX = sectorX * sectorSize;
+                int maxX = Math.min(xDimension - 1, minX + sectorSize - 1);
+                int minY = sectorY * sectorSize;
+                int maxY = Math.min(yDimension - 1, minY + sectorSize - 1);
+                sectors[sectorX][sectorY] = new SectorState(sectorX, sectorY, minX, maxX, minY, maxY);
+            }
+        }
+    }
+
+    private void markVisibleSectors() {
+        double now = currentTime();
+        int minX = Math.max(0, agent.getX() - Parameters.defaultSensorRange);
+        int maxX = Math.min(agent.getEnvironment().getxDimension() - 1, agent.getX() + Parameters.defaultSensorRange);
+        int minY = Math.max(0, agent.getY() - Parameters.defaultSensorRange);
+        int maxY = Math.min(agent.getEnvironment().getyDimension() - 1, agent.getY() + Parameters.defaultSensorRange);
+
+        int startSectorX = minX / sectorSize;
+        int endSectorX = maxX / sectorSize;
+        int startSectorY = minY / sectorSize;
+        int endSectorY = maxY / sectorSize;
+
+        for (int sectorX = startSectorX; sectorX <= endSectorX; sectorX++) {
+            for (int sectorY = startSectorY; sectorY <= endSectorY; sectorY++) {
+                sectors[sectorX][sectorY].markSeen(now);
+            }
+        }
+    }
+
+    private void rebuildSectorKnowledge() {
+        for (int sectorX = 0; sectorX < sectorColumns; sectorX++) {
+            for (int sectorY = 0; sectorY < sectorRows; sectorY++) {
+                sectors[sectorX][sectorY].clearKnownTargets();
+            }
+        }
+
+        addTargetsToSectors(knownTiles, TargetType.TILE);
+        addTargetsToSectors(knownHoles, TargetType.HOLE);
+    }
+
+    private void addTargetsToSectors(Map<Long, KnownTarget> targets, TargetType type) {
+        for (KnownTarget target : targets.values()) {
+            sectors[target.getX() / sectorSize][target.getY() / sectorSize].addKnownTarget(type);
+        }
     }
 }

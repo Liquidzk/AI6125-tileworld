@@ -1,0 +1,38 @@
+{
+    "label":  "prev-config2-groupB",
+    "workspace":  "C:\\Users\\Liquid\\Downloads\\Tileworld\\Tileworld_prev_bench",
+    "profile":  "config2",
+    "groups":  [
+                   {
+                       "group":  "groupB",
+                       "seeds":  [
+                                     1214076455,
+                                     1913182960,
+                                     1395393034,
+                                     687670178,
+                                     650138429,
+                                     434178891,
+                                     791907865,
+                                     1562796943,
+                                     529934541,
+                                     1402886736
+                                 ],
+                       "rewards":  [
+                                       973,
+                                       1053,
+                                       979,
+                                       959,
+                                       1015,
+                                       973,
+                                       977,
+                                       1005,
+                                       994,
+                                       1004
+                                   ],
+                       "average":  993.2,
+                       "min":  959,
+                       "max":  1053
+                   }
+               ],
+    "overallAverage":  993.2
+}
