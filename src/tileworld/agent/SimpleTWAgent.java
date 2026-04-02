@@ -1,10 +1,13 @@
 package tileworld.agent;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import sim.util.Int2D;
 import tileworld.Parameters;
 import tileworld.agent.StrategicTWAgentMemory.KnownTarget;
+import tileworld.agent.StrategicTWAgentMemory.SectorSnapshot;
 import tileworld.agent.StrategicTWAgentMemory.SectorState;
 import tileworld.agent.StrategicTWAgentMemory.TargetType;
 import tileworld.environment.TWDirection;
@@ -49,16 +52,37 @@ public class SimpleTWAgent extends TWAgent {
     private static final double SECTOR_PAIR_WEIGHT = 1.1;
     private static final double SECTOR_TRAVEL_WEIGHT = LARGE_MAP ? 1.25 : 1.0;
     private static final double SECTOR_STAY_BONUS = 4.0;
+    private static final double SECTOR_CLAIM_SAME_PENALTY = 1.5;
+    private static final double SECTOR_CLAIM_NEAR_PENALTY = 0.5;
+    private static final double SECTOR_CLAIM_TTL = 1.5;
     private static final double TILE_SECTOR_PENALTY_WEIGHT = TEAM_MODE ? (LARGE_MAP ? 0.80 : 0.55) : 0.0;
     private static final double HOLE_SECTOR_PENALTY_WEIGHT = TEAM_MODE ? 0.18 : 0.0;
     private static final Object TEAM_STATE_LOCK = new Object();
     private static Int2D sharedFuelStation;
+    private static final Map<Long, SectorSnapshot> sharedSectorBoard = new HashMap<Long, SectorSnapshot>();
+    private static final Map<String, SectorClaim> sharedSectorClaims = new HashMap<String, SectorClaim>();
 
     private enum GoalMode {
         TILE,
         HOLE,
         FUEL,
         EXPLORE
+    }
+
+    private static final class SectorClaim {
+        private final String agentName;
+        private final int sectorX;
+        private final int sectorY;
+        private final GoalMode mode;
+        private final double reportedAt;
+
+        private SectorClaim(String agentName, int sectorX, int sectorY, GoalMode mode, double reportedAt) {
+            this.agentName = agentName;
+            this.sectorX = sectorX;
+            this.sectorY = sectorY;
+            this.mode = mode;
+            this.reportedAt = reportedAt;
+        }
     }
 
     private final int agentIndex;
@@ -98,6 +122,8 @@ public class SimpleTWAgent extends TWAgent {
     public static void resetSharedState() {
         synchronized (TEAM_STATE_LOCK) {
             sharedFuelStation = null;
+            sharedSectorBoard.clear();
+            sharedSectorClaims.clear();
         }
     }
 
@@ -111,9 +137,11 @@ public class SimpleTWAgent extends TWAgent {
         KnownTarget fuelStation = strategicMemory.getFuelStation();
         if (fuelStation != null) {
             publishFuelStation(fuelStation);
-        } else {
-            syncSharedFuelStation();
         }
+        publishSectorSnapshots(strategicMemory.getVisibleSectorSnapshots());
+        publishSectorClaim();
+        syncSharedFuelStation();
+        syncSharedSectorKnowledge();
     }
 
     @Override
@@ -172,6 +200,7 @@ public class SimpleTWAgent extends TWAgent {
 
     private TWDirection chooseDirection() {
         syncSharedFuelStation();
+        syncSharedSectorKnowledge();
         KnownTarget fuelStation = strategicMemory.getFuelStation();
         KnownTarget tileTarget = selectTileTarget();
         KnownTarget holeTarget = selectHoleTarget();
@@ -702,7 +731,7 @@ public class SimpleTWAgent extends TWAgent {
 
         int tileCount = sector.getKnownTileCount();
         int holeCount = sector.getKnownHoleCount();
-        double freshness = sector.getFreshness(currentTime());
+        double freshness = effectiveSectorFreshness(sector);
         double opportunity = tileCount * SECTOR_TILE_OPPORTUNITY_WEIGHT
                 + holeCount * (hasTile() ? SECTOR_HOLE_OPPORTUNITY_WEIGHT + carriedTiles.size() * 0.35 : 0.45)
                 + Math.min(tileCount, holeCount) * SECTOR_PAIR_WEIGHT;
@@ -719,6 +748,7 @@ public class SimpleTWAgent extends TWAgent {
         if (sameSector(currentExploreSector, sector)) {
             score += SECTOR_STAY_BONUS;
         }
+        score -= sectorClaimPenalty(sector);
         return score;
     }
 
@@ -730,6 +760,24 @@ public class SimpleTWAgent extends TWAgent {
 
         int toFuel = estimatedPathDistance(sector.getCenterX(), sector.getCenterY(), fuelStation.getX(), fuelStation.getY());
         return getFuelLevel() > travelDistance + sweepBudget + toFuel + FUEL_BUFFER;
+    }
+
+    private double effectiveSectorFreshness(SectorState sector) {
+        double now = currentTime();
+        double localSeenAt = sector.getLocalSeenAt();
+        double sharedSeenAt = sector.getSharedSeenAt();
+        double localFreshness = localSeenAt < 0 ? now + 1.0 : Math.max(0.0, now - localSeenAt);
+
+        if (sharedSeenAt < 0) {
+            return localFreshness;
+        }
+
+        if (localSeenAt < 0) {
+            double teamFreshness = sector.getFreshness(now);
+            return teamFreshness + EXPLORATION_STRIDE * 0.4;
+        }
+
+        return localFreshness;
     }
 
     private void buildSectorSweepWaypoints(SectorState sector) {
@@ -827,6 +875,21 @@ public class SimpleTWAgent extends TWAgent {
         }
     }
 
+    private void publishSectorSnapshots(List<SectorSnapshot> snapshots) {
+        if (!TEAM_MODE || snapshots == null || snapshots.isEmpty()) {
+            return;
+        }
+        synchronized (TEAM_STATE_LOCK) {
+            for (SectorSnapshot snapshot : snapshots) {
+                long key = sectorKey(snapshot.getSectorX(), snapshot.getSectorY());
+                SectorSnapshot existing = sharedSectorBoard.get(key);
+                if (existing == null || snapshot.getSeenAt() >= existing.getSeenAt()) {
+                    sharedSectorBoard.put(key, snapshot);
+                }
+            }
+        }
+    }
+
     private void syncSharedFuelStation() {
         Int2D teamFuel;
         synchronized (TEAM_STATE_LOCK) {
@@ -834,6 +897,35 @@ public class SimpleTWAgent extends TWAgent {
         }
         if (teamFuel != null && strategicMemory.getFuelStation() == null) {
             strategicMemory.rememberFuelStation(teamFuel.x, teamFuel.y);
+        }
+    }
+
+    private void syncSharedSectorKnowledge() {
+        if (!TEAM_MODE) {
+            return;
+        }
+
+        List<SectorSnapshot> snapshots;
+        synchronized (TEAM_STATE_LOCK) {
+            snapshots = new ArrayList<SectorSnapshot>(sharedSectorBoard.values());
+        }
+        for (SectorSnapshot snapshot : snapshots) {
+            strategicMemory.mergeSectorSnapshot(snapshot);
+        }
+    }
+
+    private void publishSectorClaim() {
+        if (!TEAM_MODE) {
+            return;
+        }
+
+        SectorClaim claim = buildSectorClaim();
+        synchronized (TEAM_STATE_LOCK) {
+            if (claim == null) {
+                sharedSectorClaims.remove(name);
+            } else {
+                sharedSectorClaims.put(name, claim);
+            }
         }
     }
 
@@ -853,6 +945,56 @@ public class SimpleTWAgent extends TWAgent {
                 && right != null
                 && left.getSectorX() == right.getSectorX()
                 && left.getSectorY() == right.getSectorY();
+    }
+
+    private long sectorKey(int sectorX, int sectorY) {
+        return (((long) sectorX) << 32) | (sectorY & 0xffffffffL);
+    }
+
+    private SectorClaim buildSectorClaim() {
+        int sectorX;
+        int sectorY;
+
+        if (currentMode == GoalMode.EXPLORE && currentExploreSector != null) {
+            sectorX = currentExploreSector.getSectorX();
+            sectorY = currentExploreSector.getSectorY();
+        } else if (currentTarget != null) {
+            sectorX = currentTarget.getX() / StrategicTWAgentMemory.DEFAULT_SECTOR_SIZE;
+            sectorY = currentTarget.getY() / StrategicTWAgentMemory.DEFAULT_SECTOR_SIZE;
+        } else {
+            sectorX = getX() / StrategicTWAgentMemory.DEFAULT_SECTOR_SIZE;
+            sectorY = getY() / StrategicTWAgentMemory.DEFAULT_SECTOR_SIZE;
+        }
+
+        return new SectorClaim(name, sectorX, sectorY, currentMode, currentTime());
+    }
+
+    private double sectorClaimPenalty(SectorState sector) {
+        if (!TEAM_MODE || sector == null) {
+            return 0.0;
+        }
+
+        List<SectorClaim> claims;
+        synchronized (TEAM_STATE_LOCK) {
+            claims = new ArrayList<SectorClaim>(sharedSectorClaims.values());
+        }
+
+        double penalty = 0.0;
+        double now = currentTime();
+        for (SectorClaim claim : claims) {
+            if (claim == null || name.equals(claim.agentName) || now - claim.reportedAt > SECTOR_CLAIM_TTL) {
+                continue;
+            }
+
+            int dx = Math.abs(claim.sectorX - sector.getSectorX());
+            int dy = Math.abs(claim.sectorY - sector.getSectorY());
+            if (dx == 0 && dy == 0) {
+                penalty += SECTOR_CLAIM_SAME_PENALTY;
+            } else if (claim.mode == GoalMode.EXPLORE && dx + dy == 1) {
+                penalty += SECTOR_CLAIM_NEAR_PENALTY;
+            }
+        }
+        return penalty;
     }
 
     private void advanceMacroExplorationIndex() {

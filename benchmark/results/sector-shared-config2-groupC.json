@@ -1,0 +1,38 @@
+{
+    "label":  "shared-tuned3-config2-groupC",
+    "workspace":  "C:\\Users\\Liquid\\Downloads\\Tileworld\\Tileworld",
+    "profile":  "config2",
+    "groups":  [
+                   {
+                       "group":  "groupC",
+                       "seeds":  [
+                                     183310209,
+                                     1064120646,
+                                     1336534296,
+                                     1326785750,
+                                     805359960,
+                                     1670086370,
+                                     1377343782,
+                                     1368056574,
+                                     1710146850,
+                                     1323125408
+                                 ],
+                       "rewards":  [
+                                       1024,
+                                       1036,
+                                       1039,
+                                       1049,
+                                       1082,
+                                       999,
+                                       1001,
+                                       1004,
+                                       1077,
+                                       1046
+                                   ],
+                       "average":  1035.7,
+                       "min":  999,
+                       "max":  1082
+                   }
+               ],
+    "overallAverage":  1035.7
+}

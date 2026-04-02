@@ -68,9 +68,12 @@ public class StrategicTWAgentMemory extends TWAgentWorkingMemory {
         private final int maxX;
         private final int minY;
         private final int maxY;
-        private double lastSeenAt;
-        private int knownTileCount;
-        private int knownHoleCount;
+        private double localSeenAt;
+        private double sharedSeenAt;
+        private int localTileCount;
+        private int localHoleCount;
+        private int sharedTileCount;
+        private int sharedHoleCount;
 
         private SectorState(int sectorX, int sectorY, int minX, int maxX, int minY, int maxY) {
             this.sectorX = sectorX;
@@ -79,7 +82,8 @@ public class StrategicTWAgentMemory extends TWAgentWorkingMemory {
             this.maxX = maxX;
             this.minY = minY;
             this.maxY = maxY;
-            this.lastSeenAt = -1.0;
+            this.localSeenAt = -1.0;
+            this.sharedSeenAt = -1.0;
         }
 
         public int getSectorX() {
@@ -115,11 +119,82 @@ public class StrategicTWAgentMemory extends TWAgentWorkingMemory {
         }
 
         public double getLastSeenAt() {
-            return lastSeenAt;
+            return Math.max(localSeenAt, sharedSeenAt);
+        }
+
+        public double getLocalSeenAt() {
+            return localSeenAt;
+        }
+
+        public double getSharedSeenAt() {
+            return sharedSeenAt;
         }
 
         public double getFreshness(double now) {
-            return lastSeenAt < 0 ? now + 1.0 : Math.max(0.0, now - lastSeenAt);
+            double seenAt = getLastSeenAt();
+            return seenAt < 0 ? now + 1.0 : Math.max(0.0, now - seenAt);
+        }
+
+        public int getKnownTileCount() {
+            return localTileCount;
+        }
+
+        public int getKnownHoleCount() {
+            return localHoleCount;
+        }
+
+        private void markSeenLocal(double time) {
+            localSeenAt = time;
+        }
+
+        private void clearLocalKnownTargets() {
+            localTileCount = 0;
+            localHoleCount = 0;
+        }
+
+        private void addLocalKnownTarget(TargetType type) {
+            if (type == TargetType.TILE) {
+                localTileCount++;
+            } else if (type == TargetType.HOLE) {
+                localHoleCount++;
+            }
+        }
+
+        private void mergeSharedSnapshot(SectorSnapshot snapshot) {
+            if (snapshot.getSeenAt() < sharedSeenAt) {
+                return;
+            }
+            sharedSeenAt = snapshot.getSeenAt();
+            sharedTileCount = snapshot.getKnownTileCount();
+            sharedHoleCount = snapshot.getKnownHoleCount();
+        }
+    }
+
+    public static final class SectorSnapshot {
+        private final int sectorX;
+        private final int sectorY;
+        private final double seenAt;
+        private final int knownTileCount;
+        private final int knownHoleCount;
+
+        private SectorSnapshot(int sectorX, int sectorY, double seenAt, int knownTileCount, int knownHoleCount) {
+            this.sectorX = sectorX;
+            this.sectorY = sectorY;
+            this.seenAt = seenAt;
+            this.knownTileCount = knownTileCount;
+            this.knownHoleCount = knownHoleCount;
+        }
+
+        public int getSectorX() {
+            return sectorX;
+        }
+
+        public int getSectorY() {
+            return sectorY;
+        }
+
+        public double getSeenAt() {
+            return seenAt;
         }
 
         public int getKnownTileCount() {
@@ -128,23 +203,6 @@ public class StrategicTWAgentMemory extends TWAgentWorkingMemory {
 
         public int getKnownHoleCount() {
             return knownHoleCount;
-        }
-
-        private void markSeen(double time) {
-            lastSeenAt = time;
-        }
-
-        private void clearKnownTargets() {
-            knownTileCount = 0;
-            knownHoleCount = 0;
-        }
-
-        private void addKnownTarget(TargetType type) {
-            if (type == TargetType.TILE) {
-                knownTileCount++;
-            } else if (type == TargetType.HOLE) {
-                knownHoleCount++;
-            }
         }
     }
 
@@ -213,6 +271,36 @@ public class StrategicTWAgentMemory extends TWAgentWorkingMemory {
             }
         }
         return overlapping;
+    }
+
+    public List<SectorSnapshot> getVisibleSectorSnapshots() {
+        List<SectorSnapshot> snapshots = new ArrayList<SectorSnapshot>();
+        double now = currentTime();
+        for (int sectorX = 0; sectorX < sectorColumns; sectorX++) {
+            for (int sectorY = 0; sectorY < sectorRows; sectorY++) {
+                SectorState sector = sectors[sectorX][sectorY];
+                if (sector.getLocalSeenAt() == now) {
+                    snapshots.add(new SectorSnapshot(
+                            sector.getSectorX(),
+                            sector.getSectorY(),
+                            now,
+                            sector.localTileCount,
+                            sector.localHoleCount));
+                }
+            }
+        }
+        return snapshots;
+    }
+
+    public void mergeSectorSnapshot(SectorSnapshot snapshot) {
+        if (snapshot == null
+                || snapshot.getSectorX() < 0
+                || snapshot.getSectorX() >= sectorColumns
+                || snapshot.getSectorY() < 0
+                || snapshot.getSectorY() >= sectorRows) {
+            return;
+        }
+        sectors[snapshot.getSectorX()][snapshot.getSectorY()].mergeSharedSnapshot(snapshot);
     }
 
     public double getObservationAge(KnownTarget target) {
@@ -375,7 +463,7 @@ public class StrategicTWAgentMemory extends TWAgentWorkingMemory {
 
         for (int sectorX = startSectorX; sectorX <= endSectorX; sectorX++) {
             for (int sectorY = startSectorY; sectorY <= endSectorY; sectorY++) {
-                sectors[sectorX][sectorY].markSeen(now);
+                sectors[sectorX][sectorY].markSeenLocal(now);
             }
         }
     }
@@ -383,7 +471,7 @@ public class StrategicTWAgentMemory extends TWAgentWorkingMemory {
     private void rebuildSectorKnowledge() {
         for (int sectorX = 0; sectorX < sectorColumns; sectorX++) {
             for (int sectorY = 0; sectorY < sectorRows; sectorY++) {
-                sectors[sectorX][sectorY].clearKnownTargets();
+                sectors[sectorX][sectorY].clearLocalKnownTargets();
             }
         }
 
@@ -393,7 +481,7 @@ public class StrategicTWAgentMemory extends TWAgentWorkingMemory {
 
     private void addTargetsToSectors(Map<Long, KnownTarget> targets, TargetType type) {
         for (KnownTarget target : targets.values()) {
-            sectors[target.getX() / sectorSize][target.getY() / sectorSize].addKnownTarget(type);
+            sectors[target.getX() / sectorSize][target.getY() / sectorSize].addLocalKnownTarget(type);
         }
     }
 }

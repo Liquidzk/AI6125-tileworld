@@ -36,4 +36,4 @@ Current `6-agent` version, `5000` steps, fixed benchmark set from `benchmark/see
 | Environment | Map Size | Score |
 |---|---:|---:|
 | Environment 1 | `50 x 50` | `607.0` |
-| Environment 2 | `80 x 80` | `1026.57` |
+| Environment 2 | `80 x 80` | `1029.70` |

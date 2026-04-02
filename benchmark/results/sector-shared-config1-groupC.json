@@ -1,0 +1,38 @@
+{
+    "label":  "shared-config1-groupC",
+    "workspace":  "C:\\Users\\Liquid\\Downloads\\Tileworld\\Tileworld",
+    "profile":  "config1",
+    "groups":  [
+                   {
+                       "group":  "groupC",
+                       "seeds":  [
+                                     183310209,
+                                     1064120646,
+                                     1336534296,
+                                     1326785750,
+                                     805359960,
+                                     1670086370,
+                                     1377343782,
+                                     1368056574,
+                                     1710146850,
+                                     1323125408
+                                 ],
+                       "rewards":  [
+                                       641,
+                                       595,
+                                       600,
+                                       629,
+                                       594,
+                                       582,
+                                       604,
+                                       650,
+                                       582,
+                                       622
+                                   ],
+                       "average":  609.9,
+                       "min":  582,
+                       "max":  650
+                   }
+               ],
+    "overallAverage":  609.9
+}
