@@ -27,14 +27,22 @@ public class SimpleTWAgent extends TWAgent {
     private static final int PRE_FUEL_TARGET_RADIUS = LARGE_MAP ? 4 : 6;
     private static final int PRE_FUEL_BUDGET_BUFFER = LARGE_MAP ? 65 : 45;
     private static final int PATH_SAFETY_MARGIN = LARGE_MAP ? 18 : 10;
-    private static final double MAX_MEMORY_TARGET_AGE = 20.0;
+    private static final double MAX_MEMORY_TARGET_AGE = LARGE_MAP ? 12.0 : 24.0;
     private static final double TILE_AGE_WEIGHT = 0.30;
     private static final double HOLE_AGE_WEIGHT = 0.30;
     private static final double TILE_PRIORITY_BONUS = 1.2;
     private static final double HOLE_PRIORITY_BONUS = 1.1;
     private static final int EXTRA_TILE_DETOUR = 3;
     private static final int FORCE_DELIVERY_AT_TILES = 2;
-    private static final double SECTOR_PENALTY_WEIGHT = TEAM_MODE ? 0.45 : 0.0;
+    private static final int TARGET_REFINEMENT_LIMIT = 3;
+    private static final int TARGET_CLUSTER_RADIUS = Parameters.defaultSensorRange + 2;
+    private static final double TILE_TRAVEL_DETOUR_WEIGHT = 0.70;
+    private static final double HOLE_TRAVEL_DETOUR_WEIGHT = 0.45;
+    private static final double TARGET_SLACK_WEIGHT = 0.12;
+    private static final double TILE_CLUSTER_BONUS = 0.20;
+    private static final double HOLE_CLUSTER_BONUS = 0.30;
+    private static final double TILE_SECTOR_PENALTY_WEIGHT = TEAM_MODE ? (LARGE_MAP ? 0.80 : 0.55) : 0.0;
+    private static final double HOLE_SECTOR_PENALTY_WEIGHT = TEAM_MODE ? 0.18 : 0.0;
     private static final Object TEAM_STATE_LOCK = new Object();
     private static Int2D sharedFuelStation;
 
@@ -207,13 +215,29 @@ public class SimpleTWAgent extends TWAgent {
         if (!hasTile() || holeTarget == null) {
             return false;
         }
-        if (carriedTiles.size() >= MAX_CARRIED_TILES || carriedTiles.size() >= FORCE_DELIVERY_AT_TILES) {
+
+        int holeTravelDistance = travelDistanceTo(holeTarget);
+        if (targetSlack(holeTarget, holeTravelDistance) <= EXPLORATION_STRIDE / 2.0) {
+            return true;
+        }
+        if (carriedTiles.size() >= MAX_CARRIED_TILES) {
             return true;
         }
         if (tileTarget == null) {
             return true;
         }
-        return distanceTo(holeTarget) <= distanceTo(tileTarget) + EXTRA_TILE_DETOUR;
+
+        int tileTravelDistance = travelDistanceTo(tileTarget);
+        int tilePairDistance = nearestKnownHoleDistance(tileTarget);
+        if (carriedTiles.size() >= FORCE_DELIVERY_AT_TILES) {
+            return holeTravelDistance <= tileTravelDistance + 1
+                    || tilePairDistance > EXPLORATION_STRIDE
+                    || targetSlack(tileTarget, tileTravelDistance) <= Parameters.defaultSensorRange;
+        }
+
+        return holeTravelDistance + EXTRA_TILE_DETOUR <= tileTravelDistance
+                || tilePairDistance > EXPLORATION_STRIDE
+                || targetSlack(holeTarget, holeTravelDistance) <= EXPLORATION_STRIDE;
     }
 
     private KnownTarget selectTileTarget() {
@@ -225,9 +249,9 @@ public class SimpleTWAgent extends TWAgent {
     }
 
     private KnownTarget selectBestTarget(TargetType targetType) {
-        KnownTarget bestTarget = null;
-        double bestScore = Double.POSITIVE_INFINITY;
         KnownTarget fuelStation = strategicMemory.getFuelStation();
+        List<KnownTarget> shortlistedTargets = new ArrayList<KnownTarget>(TARGET_REFINEMENT_LIMIT);
+        List<Double> shortlistedScores = new ArrayList<Double>(TARGET_REFINEMENT_LIMIT);
 
         for (KnownTarget candidate : strategicMemory.getKnownTargets(targetType)) {
             if (!isTargetViable(candidate, fuelStation)) {
@@ -241,7 +265,14 @@ public class SimpleTWAgent extends TWAgent {
             if (sameTarget(candidate, currentTarget)) {
                 score -= 0.75;
             }
+            insertShortlistedCandidate(shortlistedTargets, shortlistedScores, candidate, score);
+        }
 
+        KnownTarget bestTarget = null;
+        double bestScore = Double.POSITIVE_INFINITY;
+        for (int i = 0; i < shortlistedTargets.size(); i++) {
+            KnownTarget candidate = shortlistedTargets.get(i);
+            double score = refineTargetScore(candidate, shortlistedScores.get(i));
             if (bestTarget == null || score < bestScore) {
                 bestTarget = candidate;
                 bestScore = score;
@@ -265,6 +296,46 @@ public class SimpleTWAgent extends TWAgent {
         score += HOLE_AGE_WEIGHT * strategicMemory.getObservationAge(hole);
         score -= HOLE_PRIORITY_BONUS * Math.max(1, carriedTiles.size());
         score += sectorPenalty(hole);
+        return score;
+    }
+
+    private void insertShortlistedCandidate(List<KnownTarget> shortlistedTargets, List<Double> shortlistedScores,
+                                            KnownTarget candidate, double score) {
+        int insertAt = 0;
+        while (insertAt < shortlistedScores.size() && shortlistedScores.get(insertAt) <= score) {
+            insertAt++;
+        }
+
+        if (insertAt >= TARGET_REFINEMENT_LIMIT) {
+            return;
+        }
+
+        shortlistedTargets.add(insertAt, candidate);
+        shortlistedScores.add(insertAt, score);
+        if (shortlistedTargets.size() > TARGET_REFINEMENT_LIMIT) {
+            shortlistedTargets.remove(TARGET_REFINEMENT_LIMIT);
+            shortlistedScores.remove(TARGET_REFINEMENT_LIMIT);
+        }
+    }
+
+    private double refineTargetScore(KnownTarget target, double score) {
+        int directDistance = distanceTo(target);
+        int travelDistance = travelDistanceTo(target);
+        double detour = Math.max(0, travelDistance - directDistance);
+        double slack = targetSlack(target, travelDistance);
+
+        if (target.getType() == TargetType.TILE) {
+            score += detour * TILE_TRAVEL_DETOUR_WEIGHT;
+            score -= Math.min(EXPLORATION_STRIDE, slack) * TARGET_SLACK_WEIGHT;
+            score -= countNearbyTargets(TargetType.TILE, target, TARGET_CLUSTER_RADIUS) * TILE_CLUSTER_BONUS;
+            return score;
+        }
+
+        score += detour * HOLE_TRAVEL_DETOUR_WEIGHT;
+        score -= Math.min(EXPLORATION_STRIDE, slack) * TARGET_SLACK_WEIGHT;
+        if (carriedTiles.size() > 1) {
+            score -= countNearbyTargets(TargetType.HOLE, target, TARGET_CLUSTER_RADIUS) * HOLE_CLUSTER_BONUS;
+        }
         return score;
     }
 
@@ -329,6 +400,13 @@ public class SimpleTWAgent extends TWAgent {
     private boolean isCurrentOrRecent(KnownTarget target) {
         return isWithinSensorRange(target.getX(), target.getY())
                 || strategicMemory.getObservationAge(target) <= MAX_MEMORY_TARGET_AGE;
+    }
+
+    private double targetSlack(KnownTarget target, int travelDistance) {
+        if (target == null || target.getExpiresAt() == Double.POSITIVE_INFINITY) {
+            return Double.POSITIVE_INFINITY;
+        }
+        return target.getExpiresAt() - currentTime() - travelDistance - 1;
     }
 
     private boolean isNearby(KnownTarget target, int radius) {
@@ -538,17 +616,20 @@ public class SimpleTWAgent extends TWAgent {
     }
 
     private int nearestKnownHoleDistance(KnownTarget tile) {
-        int bestDistance = EXPLORATION_STRIDE;
+        int bestDistance = EXPLORATION_STRIDE + Parameters.defaultSensorRange;
         boolean foundHole = false;
         for (KnownTarget hole : strategicMemory.getKnownTargets(TargetType.HOLE)) {
             if (!isCurrentOrRecent(hole)) {
                 continue;
             }
-            bestDistance = Math.min(bestDistance,
-                    manhattanDistance(tile.getX(), tile.getY(), hole.getX(), hole.getY()));
+            int distance = manhattanDistance(tile.getX(), tile.getY(), hole.getX(), hole.getY());
+            if (targetSlack(hole, distance) <= 0) {
+                continue;
+            }
+            bestDistance = Math.min(bestDistance, distance);
             foundHole = true;
         }
-        return foundHole ? bestDistance : EXPLORATION_STRIDE;
+        return foundHole ? bestDistance : EXPLORATION_STRIDE + Parameters.defaultSensorRange;
     }
 
     private void advanceExplorationIndex() {
@@ -580,7 +661,24 @@ public class SimpleTWAgent extends TWAgent {
         if (!TEAM_MODE || target == null) {
             return 0.0;
         }
-        return distanceOutsideSector(target.getX()) * SECTOR_PENALTY_WEIGHT;
+        double weight = target.getType() == TargetType.HOLE ? HOLE_SECTOR_PENALTY_WEIGHT : TILE_SECTOR_PENALTY_WEIGHT;
+        if (target.getType() == TargetType.TILE && carriedTiles.size() >= FORCE_DELIVERY_AT_TILES) {
+            weight *= 1.25;
+        }
+        return distanceOutsideSector(target.getX()) * weight;
+    }
+
+    private int countNearbyTargets(TargetType type, KnownTarget center, int radius) {
+        int count = 0;
+        for (KnownTarget candidate : strategicMemory.getKnownTargets(type)) {
+            if (candidate == center || !isCurrentOrRecent(candidate)) {
+                continue;
+            }
+            if (manhattanDistance(center.getX(), center.getY(), candidate.getX(), candidate.getY()) <= radius) {
+                count++;
+            }
+        }
+        return count;
     }
 
     private int distanceOutsideSector(int x) {
