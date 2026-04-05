@@ -52,6 +52,12 @@ public class SimpleTWAgent extends TWAgent {
     private static final double SECTOR_PAIR_WEIGHT = 1.1;
     private static final double SECTOR_TRAVEL_WEIGHT = LARGE_MAP ? 1.25 : 1.0;
     private static final double SECTOR_STAY_BONUS = 4.0;
+    private static final double PREFUEL_SECTOR_FRESHNESS_WEIGHT = 2.35;
+    private static final double PREFUEL_SECTOR_TRAVEL_WEIGHT = 1.45;
+    private static final double PREFUEL_SECTOR_ANCHOR_WEIGHT = 0.0;
+    private static final double PREFUEL_SECTOR_STAY_BONUS = 2.5;
+    private static final double PREFUEL_SECTOR_TILE_WEIGHT = 0.18;
+    private static final double PREFUEL_SECTOR_HOLE_WEIGHT = 0.10;
     private static final double SECTOR_CLAIM_SAME_PENALTY = 1.5;
     private static final double SECTOR_CLAIM_NEAR_PENALTY = 0.5;
     private static final double SECTOR_CLAIM_TTL = 1.5;
@@ -91,12 +97,14 @@ public class SimpleTWAgent extends TWAgent {
     private final String name;
     private final StrategicTWAgentMemory strategicMemory;
     private final AstarPathGenerator pathGenerator;
+    private final Int2D preFuelAnchor;
 
     private GoalMode currentMode;
     private KnownTarget currentTarget;
     private TWPath currentPath;
     private SectorState currentExploreSector;
     private boolean usingSectorExploration;
+    private boolean usingPreFuelSectorExploration;
     private Int2D currentExploreTarget;
     private List<Int2D> explorationWaypoints;
     private int explorationIndex;
@@ -113,6 +121,7 @@ public class SimpleTWAgent extends TWAgent {
         int[] sector = computeSectorBounds(env.getxDimension(), this.agentIndex);
         this.sectorStartX = sector[0];
         this.sectorEndX = sector[1];
+        this.preFuelAnchor = computePreFuelAnchor(env.getxDimension(), env.getyDimension(), this.agentIndex);
     }
 
     public static SimpleTWAgent createAgent(int index, int xpos, int ypos, TWEnvironment env, double fuelLevel) {
@@ -206,6 +215,9 @@ public class SimpleTWAgent extends TWAgent {
         KnownTarget holeTarget = selectHoleTarget();
 
         if (fuelStation == null) {
+            if (shouldUsePreFuelSectorExploration()) {
+                return followExplorationGoal();
+            }
             if (hasTile() && holeTarget != null && isNearby(holeTarget, PRE_FUEL_TARGET_RADIUS)) {
                 return followTargetGoal(GoalMode.HOLE, holeTarget);
             }
@@ -656,9 +668,18 @@ public class SimpleTWAgent extends TWAgent {
     }
 
     private void ensureExplorationWaypoints() {
+        if (shouldUsePreFuelSectorExploration()) {
+            ensurePreFuelSectorWaypoints();
+            return;
+        }
+
         if (!shouldUseSectorExploration()) {
             ensureMacroSweepWaypoints();
             return;
+        }
+
+        if (usingPreFuelSectorExploration) {
+            clearExplorationPlan();
         }
 
         if (explorationWaypoints != null && explorationIndex < explorationWaypoints.size()) {
@@ -677,18 +698,47 @@ public class SimpleTWAgent extends TWAgent {
 
         currentExploreSector = nextSector;
         explorationWaypoints = new ArrayList<Int2D>();
-        buildSectorSweepWaypoints(nextSector);
+        buildSectorSweepWaypoints(nextSector, false);
+        explorationIndex = explorationWaypoints.isEmpty() ? 0 : findClosestWaypointIndex(explorationWaypoints);
+        currentExploreTarget = null;
+        currentPath = null;
+    }
+
+    private void ensurePreFuelSectorWaypoints() {
+        if (usingSectorExploration && !usingPreFuelSectorExploration) {
+            clearExplorationPlan();
+        }
+
+        if (usingPreFuelSectorExploration && explorationWaypoints != null && explorationIndex < explorationWaypoints.size()) {
+            return;
+        }
+
+        SectorState nextSector = selectPreFuelSearchSector();
+        if (nextSector == null) {
+            explorationWaypoints = null;
+            explorationIndex = 0;
+            currentExploreSector = null;
+            currentExploreTarget = null;
+            currentPath = null;
+            return;
+        }
+
+        currentExploreSector = nextSector;
+        explorationWaypoints = new ArrayList<Int2D>();
+        buildSectorSweepWaypoints(nextSector, true);
         explorationIndex = explorationWaypoints.isEmpty() ? 0 : findClosestWaypointIndex(explorationWaypoints);
         currentExploreTarget = null;
         currentPath = null;
     }
 
     private void ensureMacroSweepWaypoints() {
-        if (!usingSectorExploration && explorationWaypoints != null && !explorationWaypoints.isEmpty()) {
+        if (!usingSectorExploration && !usingPreFuelSectorExploration
+                && explorationWaypoints != null && !explorationWaypoints.isEmpty()) {
             return;
         }
 
         usingSectorExploration = false;
+        usingPreFuelSectorExploration = false;
         currentExploreSector = null;
         explorationWaypoints = new ArrayList<Int2D>();
         buildMacroSweepWaypoints();
@@ -713,8 +763,55 @@ public class SimpleTWAgent extends TWAgent {
         return bestSector;
     }
 
+    private SectorState selectPreFuelSearchSector() {
+        SectorState bestSector = null;
+        double bestScore = Double.NEGATIVE_INFINITY;
+
+        for (SectorState sector : strategicMemory.getSectorsOverlappingXRange(0, this.getEnvironment().getxDimension() - 1)) {
+            double score = scorePreFuelSector(sector);
+            if (score > bestScore) {
+                bestScore = score;
+                bestSector = sector;
+            }
+        }
+
+        return bestSector;
+    }
+
+    private boolean shouldUsePreFuelSectorExploration() {
+        return LARGE_MAP && TEAM_MODE && strategicMemory.getFuelStation() == null;
+    }
+
     private boolean shouldUseSectorExploration() {
         return LARGE_MAP && strategicMemory.getFuelStation() != null;
+    }
+
+    private double scorePreFuelSector(SectorState sector) {
+        if (sector == null) {
+            return Double.NEGATIVE_INFINITY;
+        }
+
+        int centerX = sector.getCenterX();
+        int centerY = sector.getCenterY();
+        int travelDistance = estimatedPathDistance(getX(), getY(), centerX, centerY);
+        if (!hasExplorationFuelBudget(sector, null, travelDistance)) {
+            return Double.NEGATIVE_INFINITY;
+        }
+
+        double freshness = effectivePreFuelFreshness(sector);
+        double opportunity = sector.getKnownTileCount() * PREFUEL_SECTOR_TILE_WEIGHT
+                + sector.getKnownHoleCount() * PREFUEL_SECTOR_HOLE_WEIGHT;
+        int anchorDistance = manhattanDistance(centerX, centerY, preFuelAnchor.x, preFuelAnchor.y);
+
+        double score = freshness * PREFUEL_SECTOR_FRESHNESS_WEIGHT
+                + opportunity
+                - travelDistance * PREFUEL_SECTOR_TRAVEL_WEIGHT
+                - anchorDistance * PREFUEL_SECTOR_ANCHOR_WEIGHT;
+        if (sameSector(currentExploreSector, sector)) {
+            score += PREFUEL_SECTOR_STAY_BONUS;
+        }
+        score -= sectorClaimPenalty(sector);
+        return score;
     }
 
     private double scoreExplorationSector(SectorState sector, KnownTarget fuelStation) {
@@ -780,8 +877,13 @@ public class SimpleTWAgent extends TWAgent {
         return localFreshness;
     }
 
-    private void buildSectorSweepWaypoints(SectorState sector) {
+    private double effectivePreFuelFreshness(SectorState sector) {
+        return sector.getFreshness(currentTime());
+    }
+
+    private void buildSectorSweepWaypoints(SectorState sector, boolean preFuelMode) {
         usingSectorExploration = true;
+        usingPreFuelSectorExploration = preFuelMode;
         int minX = sector.getMinX();
         int maxX = sector.getMaxX();
         int minY = sector.getMinY();
@@ -860,6 +962,7 @@ public class SimpleTWAgent extends TWAgent {
     private void clearExplorationPlan() {
         currentExploreSector = null;
         usingSectorExploration = false;
+        usingPreFuelSectorExploration = false;
         explorationWaypoints = null;
         explorationIndex = 0;
         currentExploreTarget = null;
@@ -1041,5 +1144,26 @@ public class SimpleTWAgent extends TWAgent {
             end = start;
         }
         return new int[]{start, end};
+    }
+
+    private Int2D computePreFuelAnchor(int width, int height, int index) {
+        int maxX = width - 1;
+        int maxY = height - 1;
+        int midY = maxY / 2;
+
+        switch (Math.floorMod(index, 6)) {
+            case 0:
+                return new Int2D(0, 0);
+            case 1:
+                return new Int2D(maxX, 0);
+            case 2:
+                return new Int2D(0, midY);
+            case 3:
+                return new Int2D(maxX, midY);
+            case 4:
+                return new Int2D(0, maxY);
+            default:
+                return new Int2D(maxX, maxY);
+        }
     }
 }
