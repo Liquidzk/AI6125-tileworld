@@ -1,6 +1,6 @@
 # Methods Documentation
 
-This document describes the current final strategy implemented on branch `6-agent-sectors`.
+This document describes the current strategy implemented on branch `wip/prefuel-search-save`.
 
 The goal of this version is to provide a practical, explainable multi-agent method for Tileworld under the two public configurations:
 
@@ -14,6 +14,7 @@ The implementation is not a globally optimal planner. It is a layered method bui
 - local path planning with A*
 - working memory plus strategic memory
 - static geographic team partitioning
+- large-map pre-fuel sector search
 - sector-based exploration on large maps
 - lightweight team communication for high-value shared state
 
@@ -325,9 +326,17 @@ Two levels of estimation are used:
 
 Before the fuel station is known, the agent cannot do a full return-to-station calculation, so it uses a fixed pre-fuel buffer instead.
 
-### 7.4 Known Weakness
+### 7.4 Pre-Fuel Large-Map Search
 
-Large-map failures still exist in seeds where the team fails to discover the fuel station early enough. This is primarily a pre-fuel exploration problem rather than a post-discovery refueling bug.
+On the large map, this branch adds a dedicated pre-fuel sector-search mode.
+
+Before the fuel station is discovered:
+
+- agents search across the whole map instead of remaining inside macro-zones
+- sector scoring emphasizes freshness and travel cost
+- sector claims are still used lightly to reduce overlap
+
+This change is specifically aimed at reducing catastrophic seeds where the team discovers the fuel station too late.
 
 ## 8. Path Planning
 
@@ -408,9 +417,17 @@ Reason:
 
 ### 10.2 `80 x 80`
 
-Once the fuel station is known, the method switches to sector exploration.
+Large-map exploration is split into two phases.
 
-This is the main addition on the `6-agent-sectors` branch.
+Before the fuel station is known:
+
+- the team uses pre-fuel sector search across the whole map
+- sector scoring emphasizes freshness and low travel cost
+- the goal is to find the fuel station early enough to stabilize the run
+
+After the fuel station is known:
+
+- the method switches to sector exploration constrained by each agent's macro-zone
 
 The logic is:
 
@@ -454,7 +471,7 @@ If any agent knows the fuel station:
 - it publishes the station location to team shared state
 - other agents synchronize it into their local memory
 
-This allows the entire team to switch from pre-fuel survival behavior to stable fuel-aware behavior after one discovery.
+This allows the entire team to switch from pre-fuel search behavior to stable fuel-aware behavior after one discovery.
 
 ### 11.2 Sector Snapshot Blackboard
 
@@ -551,21 +568,29 @@ At a high level, the main improvements are:
 2. purely local perception was extended with structured strategic memory
 3. target choice became utility-driven instead of purely distance-driven
 4. fuel became part of target feasibility, not an afterthought
-5. exploration became spatially structured
+5. exploration became spatially structured, with macro sweep on small maps and pre-fuel search plus sector exploration on large maps
 6. communication was added for fuel and sector-level coordination
 
 ## 15. Known Limitations
 
 This version is stronger than the starter code, but it still has limitations.
 
-### 15.1 Pre-Fuel Failure on Some `80 x 80` Seeds
+### 15.1 Pre-Fuel Failure Risk on `80 x 80`
 
-There are still rare seeds where:
+This branch was introduced specifically to reduce catastrophic pre-fuel failures on the large map.
 
-- no agent discovers the fuel station early enough
-- the entire team eventually runs out of fuel
+In the fixed three-group benchmark used during development, the pre-fuel sector-search version no longer reproduced the earlier full-team fuel-out cases.
 
-This is not the dominant case, but it is a real failure mode on large maps.
+That said, the risk is not theoretically eliminated:
+
+- the fuel station is still unique and initially unknown
+- agent spawn points are still random
+- early exploration quality still depends on the seed
+
+So the more accurate statement is:
+
+- catastrophic pre-fuel failure is no longer common in the tested benchmark groups
+- but it remains a possible edge case on unseen seeds
 
 ### 15.2 Static Macro-Zone Ownership
 
@@ -606,12 +631,12 @@ over:
 For this project, that tradeoff has been reasonable:
 
 - `50 x 50` remains stable with macro sweep
-- `80 x 80` improves with sector-based exploration and sector sharing
+- `80 x 80` improves with pre-fuel sector search, sector-based exploration, and sector sharing
 - the method stays understandable enough to document and defend
 
 ## 17. Summary
 
-The current `6-agent-sectors` method can be summarized as follows:
+The current `wip/prefuel-search-save` method can be summarized as follows:
 
 - six homogeneous agents operate under a shared reactive policy
 - each agent has a static macro-zone for coarse coverage
@@ -620,7 +645,7 @@ The current `6-agent-sectors` method can be summarized as follows:
 - sector-level observations are shared through a lightweight blackboard
 - agents choose targets using utility heuristics rather than raw nearest distance
 - small maps use stable macro sweeping
-- large maps switch to sector-based exploration after fuel discovery
+- large maps use full-map pre-fuel sector search before discovery, then switch to sector-based exploration after fuel discovery
 - light sector claims reduce crowding without rigid central control
 
 This is the current final method implemented in the repository.

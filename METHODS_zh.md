@@ -1,6 +1,6 @@
 # 方法说明文档
 
-本文档说明当前最终方案，也就是 `6-agent-sectors` 分支上的实现方法。
+本文档说明当前分支 `wip/prefuel-search-save` 上的实现方法。
 
 当前方案的目标不是构造一个全局最优的集中式规划器，而是在课程给定的 Tileworld 框架中，构建一套：
 
@@ -18,6 +18,7 @@
 - 基于 A* 的局部路径规划
 - 工作记忆与战略记忆
 - 静态空间分区
+- 大地图上的 pre-fuel sector 搜站
 - 大地图上的 sector 探索
 - 轻量级 agent 间通信
 
@@ -346,15 +347,17 @@ agent 在追逐 tile 或 hole 之前，会先做 fuel 可达性检查。
 - 到目标的代价
 - 加固定 pre-fuel 余量
 
-### 7.4 已知弱点
+### 7.4 大图 Pre-Fuel 搜站
 
-当前 `80x80` 仍然存在少量 seed 会出现全队缺油。
+在大图上，当前分支额外加入了一层专门的 pre-fuel sector 搜站。
 
-这类失败的主要原因不是“找到 fuel station 后回站逻辑有 bug”，而是：
+也就是说，在 fuel station 尚未被发现之前：
 
-- 在第一次发现 fuel station 之前，团队搜索得太慢
+- 团队不会被限制在各自主区内
+- 而是会在全图范围上按 sector freshness 和 travel cost 选搜索区块
+- 同时保留轻量 claim，避免所有 agent 完全重叠
 
-所以这属于 pre-fuel 探索问题，而不是 post-fuel 回油问题。
+这一层的目标是尽快完成第一次 fuel station 发现，减少因为搜站过慢导致的灾难性 seed。
 
 ## 8. 路径规划
 
@@ -447,9 +450,19 @@ agent 在追逐 tile 或 hole 之前，会先做 fuel 可达性检查。
 
 ### 10.2 `80 x 80`
 
-在大图上，当 fuel station 已经被发现后，探索逻辑会切换到 sector-based exploration。
+大图上的探索分成两个阶段。
 
-流程是：
+在 fuel station 未知时：
+
+- 先走 pre-fuel sector 搜站
+- 在全图范围上按 freshness 和 travel cost 选 sector
+- 目标是尽快完成第一次 fuel station 发现
+
+在 fuel station 已知后：
+
+- 再切回受主区约束的 sector exploration
+
+后者的流程是：
 
 1. 从自己主区范围内枚举候选 sector
 2. 计算每个 sector 的 score
@@ -601,21 +614,29 @@ claim 中包含：
 2. 从几乎无高层记忆，改成显式维护 tile/hole/fuel 的战略记忆
 3. 从最近目标贪心，改成分层筛选和精排
 4. 从弱 fuel 控制，改成 fuel 预算驱动的目标可达性判断
-5. 从单一扫描，改成小图 macro sweep、大图 sector exploration
+5. 从单一扫描，改成小图 macro sweep、大图 pre-fuel 搜站加 sector exploration
 6. 从无协作，改成 fuel station 共享 + sector 共享 + sector claim
 
 ## 15. 当前方案的局限
 
 虽然当前版本已经比起初始状态强很多，但仍有明确限制。
 
-### 15.1 大图 pre-fuel 搜索仍有失败 seed
+### 15.1 大图 pre-fuel 的残余风险
 
-当前 `80 x 80` 下，仍有少数 seed 会出现：
+当前这个 `pre-fuel sector search` 分支，本来就是为了降低 `80 x 80` 下那种“第一次迟迟找不到 fuel station，最后全队跑空”的灾难性 seed。
 
-- fuel station 长时间未被发现
-- 最终 6 个 agent 全部耗尽 fuel
+按开发时使用的三组固定 benchmark seed 来看，这一版已经没有再复现之前那几个典型的全队 fuel-out case。
 
-这不是高频，但一旦发生就是灾难性掉分。
+但这不等于理论上完全消失：
+
+- fuel station 仍然只有一个，而且开局未知
+- agent 的出生点仍然是随机的
+- 早期搜索质量仍然会受 seed 影响
+
+所以更准确的说法应该是：
+
+- 在当前固定 benchmark 组里，这类 pre-fuel 灾难性失败已经没有再出现
+- 但在未测试过的新 seed 上，它仍然是一个理论上的边缘风险
 
 ### 15.2 主区分工是静态的
 
@@ -657,20 +678,20 @@ claim 中包含：
 这种取舍在本项目里是合理的，因为：
 
 - 小图上稳定性更重要
-- 大图上 sector 层已经能带来明显收益
+- 大图上 pre-fuel 搜站和 sector 层已经能带来明显收益
 - 策略整体仍然容易说明和复现实验
 
 ## 17. 总结
 
-当前 `6-agent-sectors` 的方法可以概括为：
+当前 `wip/prefuel-search-save` 分支的方法可以概括为：
 
 - 6 个同构 agent 共享一套反应式策略
 - 每个 agent 有主区，用于粗粒度空间分工
 - 所有 agent 都维护 tile、hole、fuel、sector 的战略记忆
 - fuel station 发现后全队共享
-- 大图下通过 sector freshness 和机会值来调度探索
+- 大图下先用 pre-fuel sector 搜站完成第一次 fuel 发现，再用 sector freshness 和机会值调度探索
 - 通过 sector snapshot 和 sector claim 实现轻量通信
 - 小图保持稳定的 macro sweep
-- 大图在 fuel station 已知后切换到 sector exploration
+- 大图在 fuel station 已知后切换到主区约束下的 sector exploration
 
-这就是当前项目根目录下 `6-agent-sectors` 分支所实现的最终方法。
+这就是当前项目根目录下 `wip/prefuel-search-save` 分支所实现的方法。
