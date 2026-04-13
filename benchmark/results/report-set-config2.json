@@ -1,0 +1,38 @@
+{
+    "label":  "report-set-config2",
+    "workspace":  "C:\\Users\\Liquid\\Downloads\\Tileworld\\Tileworld",
+    "profile":  "config2",
+    "groups":  [
+                   {
+                       "group":  "reportSet",
+                       "seeds":  [
+                                     570477980,
+                                     1845044011,
+                                     1809291726,
+                                     183310209,
+                                     1323125408,
+                                     173555314,
+                                     449236748,
+                                     1069139987,
+                                     200360204,
+                                     110019
+                                 ],
+                       "rewards":  [
+                                       985,
+                                       1056,
+                                       1000,
+                                       1042,
+                                       1061,
+                                       1000,
+                                       1000,
+                                       1038,
+                                       1022,
+                                       1026
+                                   ],
+                       "average":  1023,
+                       "min":  985,
+                       "max":  1061
+                   }
+               ],
+    "overallAverage":  1023
+}

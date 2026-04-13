@@ -24,6 +24,7 @@ import tileworld.planners.TWPathStep;
 public class SimpleTWAgent extends TWAgent {
 
     private static final boolean LARGE_MAP = Parameters.xDimension >= 80 || Parameters.yDimension >= 80;
+    private static final boolean VERY_LARGE_MAP = Parameters.xDimension > 99 || Parameters.yDimension > 99;
     private static final boolean TEAM_MODE = Parameters.agentCount > 1;
     private static final int MAX_CARRIED_TILES = 3;
     private static final int EXPLORATION_STRIDE = Parameters.defaultSensorRange * 2 + 1;
@@ -58,6 +59,8 @@ public class SimpleTWAgent extends TWAgent {
     private static final double PREFUEL_SECTOR_STAY_BONUS = 2.5;
     private static final double PREFUEL_SECTOR_TILE_WEIGHT = 0.18;
     private static final double PREFUEL_SECTOR_HOLE_WEIGHT = 0.10;
+    private static final int PREFUEL_LARGE_TILE_RADIUS = 1;
+    private static final int PREFUEL_LARGE_HOLE_RADIUS = 2;
     private static final double SECTOR_CLAIM_SAME_PENALTY = 1.5;
     private static final double SECTOR_CLAIM_NEAR_PENALTY = 0.5;
     private static final double SECTOR_CLAIM_TTL = 1.5;
@@ -216,6 +219,10 @@ public class SimpleTWAgent extends TWAgent {
 
         if (fuelStation == null) {
             if (shouldUsePreFuelSectorExploration()) {
+                TWDirection opportunityDirection = chooseVeryLargeMapPreFuelOpportunity(tileTarget, holeTarget);
+                if (opportunityDirection != null) {
+                    return opportunityDirection;
+                }
                 return followExplorationGoal();
             }
             if (hasTile() && holeTarget != null && isNearby(holeTarget, PRE_FUEL_TARGET_RADIUS)) {
@@ -240,6 +247,30 @@ public class SimpleTWAgent extends TWAgent {
             return followTargetGoal(GoalMode.HOLE, holeTarget);
         }
         return followExplorationGoal();
+    }
+
+    private TWDirection chooseVeryLargeMapPreFuelOpportunity(KnownTarget tileTarget, KnownTarget holeTarget) {
+        if (!VERY_LARGE_MAP) {
+            return null;
+        }
+
+        if (hasTile() && isPreFuelImmediateOpportunity(holeTarget, PREFUEL_LARGE_HOLE_RADIUS)) {
+            return followTargetGoal(GoalMode.HOLE, holeTarget);
+        }
+        if (carriedTiles.size() < MAX_CARRIED_TILES && isPreFuelImmediateOpportunity(tileTarget, PREFUEL_LARGE_TILE_RADIUS)) {
+            return followTargetGoal(GoalMode.TILE, tileTarget);
+        }
+        return null;
+    }
+
+    private boolean isPreFuelImmediateOpportunity(KnownTarget target, int radius) {
+        if (target == null || !isCurrentOrRecent(target)) {
+            return false;
+        }
+        if (!isWithinSensorRange(target.getX(), target.getY())) {
+            return false;
+        }
+        return manhattanDistance(getX(), getY(), target.getX(), target.getY()) <= radius;
     }
 
     private boolean shouldRefuelHere() {
@@ -1166,4 +1197,5 @@ public class SimpleTWAgent extends TWAgent {
                 return new Int2D(maxX, maxY);
         }
     }
+
 }

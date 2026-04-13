@@ -1,0 +1,69 @@
+{
+    "profile":  "hidden120",
+    "variant":  "prefuel-small-radius-opportunity",
+    "seeds":  [
+                  {
+                      "seed":  570477980,
+                      "reward":  1496,
+                      "fuelOutCount":  0,
+                      "refuelCount":  65
+                  },
+                  {
+                      "seed":  1845044011,
+                      "reward":  1409,
+                      "fuelOutCount":  0,
+                      "refuelCount":  68
+                  },
+                  {
+                      "seed":  1809291726,
+                      "reward":  1541,
+                      "fuelOutCount":  0,
+                      "refuelCount":  66
+                  },
+                  {
+                      "seed":  183310209,
+                      "reward":  1492,
+                      "fuelOutCount":  0,
+                      "refuelCount":  68
+                  },
+                  {
+                      "seed":  1323125408,
+                      "reward":  1486,
+                      "fuelOutCount":  0,
+                      "refuelCount":  65
+                  },
+                  {
+                      "seed":  173555314,
+                      "reward":  1566,
+                      "fuelOutCount":  0,
+                      "refuelCount":  65
+                  },
+                  {
+                      "seed":  449236748,
+                      "reward":  1246,
+                      "fuelOutCount":  1,
+                      "refuelCount":  54
+                  },
+                  {
+                      "seed":  1069139987,
+                      "reward":  1218,
+                      "fuelOutCount":  0,
+                      "refuelCount":  64
+                  },
+                  {
+                      "seed":  200360204,
+                      "reward":  107,
+                      "fuelOutCount":  6,
+                      "refuelCount":  0
+                  },
+                  {
+                      "seed":  110019,
+                      "reward":  1516,
+                      "fuelOutCount":  0,
+                      "refuelCount":  63
+                  }
+              ],
+    "averageReward":  1307.7,
+    "fuelOutSeeds":  2,
+    "zeroRefuelSeeds":  1
+}
