@@ -1,6 +1,8 @@
 package tileworld.agent;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -61,6 +63,13 @@ public class SimpleTWAgent extends TWAgent {
     private static final double PREFUEL_SECTOR_HOLE_WEIGHT = 0.10;
     private static final int PREFUEL_LARGE_TILE_RADIUS = 1;
     private static final int PREFUEL_LARGE_HOLE_RADIUS = 2;
+    private static final double VERY_LARGE_PREFUEL_FRESHNESS_WEIGHT = 3.1;
+    private static final double VERY_LARGE_PREFUEL_TRAVEL_WEIGHT = 1.05;
+    private static final double VERY_LARGE_PREFUEL_LANE_WEIGHT = 0.22;
+    private static final double VERY_LARGE_PREFUEL_FRONTIER_WEIGHT = 0.10;
+    private static final double VERY_LARGE_PREFUEL_UNSEEN_BONUS = 6.0;
+    private static final double VERY_LARGE_PREFUEL_CLAIM_MULTIPLIER = 2.2;
+    private static final int VERY_LARGE_PREFUEL_STRICT_STEPS = 140;
     private static final double SECTOR_CLAIM_SAME_PENALTY = 1.5;
     private static final double SECTOR_CLAIM_NEAR_PENALTY = 0.5;
     private static final double SECTOR_CLAIM_TTL = 1.5;
@@ -70,6 +79,7 @@ public class SimpleTWAgent extends TWAgent {
     private static Int2D sharedFuelStation;
     private static final Map<Long, SectorSnapshot> sharedSectorBoard = new HashMap<Long, SectorSnapshot>();
     private static final Map<String, SectorClaim> sharedSectorClaims = new HashMap<String, SectorClaim>();
+    private static final Map<String, Int2D> sharedSpawnPositions = new HashMap<String, Int2D>();
 
     private enum GoalMode {
         TILE,
@@ -94,6 +104,20 @@ public class SimpleTWAgent extends TWAgent {
         }
     }
 
+    private static final class PreFuelAssignment {
+        private final int laneStartX;
+        private final int laneEndX;
+        private final Int2D frontierAnchor;
+        private final boolean startsFromTop;
+
+        private PreFuelAssignment(int laneStartX, int laneEndX, Int2D frontierAnchor, boolean startsFromTop) {
+            this.laneStartX = laneStartX;
+            this.laneEndX = laneEndX;
+            this.frontierAnchor = frontierAnchor;
+            this.startsFromTop = startsFromTop;
+        }
+    }
+
     private final int agentIndex;
     private final int sectorStartX;
     private final int sectorEndX;
@@ -101,6 +125,7 @@ public class SimpleTWAgent extends TWAgent {
     private final StrategicTWAgentMemory strategicMemory;
     private final AstarPathGenerator pathGenerator;
     private final Int2D preFuelAnchor;
+    private final Int2D spawnPoint;
 
     private GoalMode currentMode;
     private KnownTarget currentTarget;
@@ -124,7 +149,11 @@ public class SimpleTWAgent extends TWAgent {
         int[] sector = computeSectorBounds(env.getxDimension(), this.agentIndex);
         this.sectorStartX = sector[0];
         this.sectorEndX = sector[1];
+        this.spawnPoint = new Int2D(xpos, ypos);
         this.preFuelAnchor = computePreFuelAnchor(env.getxDimension(), env.getyDimension(), this.agentIndex);
+        synchronized (TEAM_STATE_LOCK) {
+            sharedSpawnPositions.put(this.name, this.spawnPoint);
+        }
     }
 
     public static SimpleTWAgent createAgent(int index, int xpos, int ypos, TWEnvironment env, double fuelLevel) {
@@ -136,6 +165,7 @@ public class SimpleTWAgent extends TWAgent {
             sharedFuelStation = null;
             sharedSectorBoard.clear();
             sharedSectorClaims.clear();
+            sharedSpawnPositions.clear();
         }
     }
 
@@ -829,6 +859,10 @@ public class SimpleTWAgent extends TWAgent {
             return Double.NEGATIVE_INFINITY;
         }
 
+        if (VERY_LARGE_MAP) {
+            return scoreVeryLargePreFuelSector(sector, centerX, centerY, travelDistance);
+        }
+
         double freshness = effectivePreFuelFreshness(sector);
         double opportunity = sector.getKnownTileCount() * PREFUEL_SECTOR_TILE_WEIGHT
                 + sector.getKnownHoleCount() * PREFUEL_SECTOR_HOLE_WEIGHT;
@@ -842,6 +876,30 @@ public class SimpleTWAgent extends TWAgent {
             score += PREFUEL_SECTOR_STAY_BONUS;
         }
         score -= sectorClaimPenalty(sector);
+        return score;
+    }
+
+    private double scoreVeryLargePreFuelSector(SectorState sector, int centerX, int centerY, int travelDistance) {
+        PreFuelAssignment assignment = resolvePreFuelAssignment();
+        int laneDistance = distanceOutsideRange(centerX, assignment.laneStartX, assignment.laneEndX);
+        if (currentTime() < VERY_LARGE_PREFUEL_STRICT_STEPS
+                && laneDistance > StrategicTWAgentMemory.DEFAULT_SECTOR_SIZE * 2) {
+            return Double.NEGATIVE_INFINITY;
+        }
+
+        double freshness = effectivePreFuelFreshness(sector);
+        double unseenBonus = sector.getLastSeenAt() < 0 ? VERY_LARGE_PREFUEL_UNSEEN_BONUS : 0.0;
+        double frontierDistance = manhattanDistance(centerX, centerY, assignment.frontierAnchor.x, assignment.frontierAnchor.y);
+        double score = freshness * VERY_LARGE_PREFUEL_FRESHNESS_WEIGHT
+                + unseenBonus
+                - travelDistance * VERY_LARGE_PREFUEL_TRAVEL_WEIGHT
+                - laneDistance * VERY_LARGE_PREFUEL_LANE_WEIGHT
+                - frontierDistance * VERY_LARGE_PREFUEL_FRONTIER_WEIGHT;
+
+        if (sameSector(currentExploreSector, sector)) {
+            score += PREFUEL_SECTOR_STAY_BONUS;
+        }
+        score -= sectorClaimPenalty(sector) * VERY_LARGE_PREFUEL_CLAIM_MULTIPLIER;
         return score;
     }
 
@@ -919,7 +977,9 @@ public class SimpleTWAgent extends TWAgent {
         int maxX = sector.getMaxX();
         int minY = sector.getMinY();
         int maxY = sector.getMaxY();
-        boolean topToBottom = true;
+        boolean topToBottom = preFuelMode && VERY_LARGE_MAP
+                ? resolvePreFuelAssignment().startsFromTop
+                : true;
 
         for (int x = minX; x <= maxX; x += EXPLORATION_STRIDE) {
             explorationWaypoints.add(new Int2D(x, topToBottom ? minY : maxY));
@@ -1160,6 +1220,16 @@ public class SimpleTWAgent extends TWAgent {
         return 0;
     }
 
+    private int distanceOutsideRange(int value, int min, int max) {
+        if (value < min) {
+            return min - value;
+        }
+        if (value > max) {
+            return value - max;
+        }
+        return 0;
+    }
+
     private int[] computeSectorBounds(int width, int index) {
         if (!TEAM_MODE) {
             return new int[]{0, width - 1};
@@ -1196,6 +1266,58 @@ public class SimpleTWAgent extends TWAgent {
             default:
                 return new Int2D(maxX, maxY);
         }
+    }
+
+    private PreFuelAssignment resolvePreFuelAssignment() {
+        if (!TEAM_MODE || !VERY_LARGE_MAP) {
+            return new PreFuelAssignment(sectorStartX, sectorEndX, preFuelAnchor,
+                    spawnPoint.y <= this.getEnvironment().getyDimension() / 2);
+        }
+
+        List<Map.Entry<String, Int2D>> spawns;
+        synchronized (TEAM_STATE_LOCK) {
+            spawns = new ArrayList<Map.Entry<String, Int2D>>(sharedSpawnPositions.entrySet());
+        }
+        if (spawns.isEmpty()) {
+            return new PreFuelAssignment(sectorStartX, sectorEndX, preFuelAnchor,
+                    spawnPoint.y <= this.getEnvironment().getyDimension() / 2);
+        }
+
+        Collections.sort(spawns, new Comparator<Map.Entry<String, Int2D>>() {
+            @Override
+            public int compare(Map.Entry<String, Int2D> left, Map.Entry<String, Int2D> right) {
+                int cmp = Integer.compare(left.getValue().x, right.getValue().x);
+                if (cmp != 0) {
+                    return cmp;
+                }
+                return Integer.compare(left.getValue().y, right.getValue().y);
+            }
+        });
+
+        int rank = 0;
+        for (int i = 0; i < spawns.size(); i++) {
+            if (name.equals(spawns.get(i).getKey())) {
+                rank = i;
+                break;
+            }
+        }
+
+        int width = this.getEnvironment().getxDimension();
+        int height = this.getEnvironment().getyDimension();
+        int teamSize = Math.max(1, spawns.size());
+        int laneStartX = (rank * width) / teamSize;
+        int laneEndX = (((rank + 1) * width) / teamSize) - 1;
+        if (rank >= teamSize - 1) {
+            laneEndX = width - 1;
+        }
+        if (laneEndX < laneStartX) {
+            laneEndX = laneStartX;
+        }
+
+        int anchorX = (laneStartX + laneEndX) / 2;
+        boolean startsFromTop = spawnPoint.y <= height / 2;
+        int anchorY = startsFromTop ? 0 : height - 1;
+        return new PreFuelAssignment(laneStartX, laneEndX, new Int2D(anchorX, anchorY), startsFromTop);
     }
 
 }

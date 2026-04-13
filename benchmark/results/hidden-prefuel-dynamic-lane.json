@@ -1,0 +1,81 @@
+{
+    "profile":  "hidden120",
+    "variant":  "prefuel-dynamic-lane",
+    "seeds":  [
+                  {
+                      "seed":  570477980,
+                      "reward":  1496,
+                      "fuelOutCount":  0,
+                      "refuelCount":  65,
+                      "timedOut":  false
+                  },
+                  {
+                      "seed":  1845044011,
+                      "reward":  1409,
+                      "fuelOutCount":  0,
+                      "refuelCount":  68,
+                      "timedOut":  false
+                  },
+                  {
+                      "seed":  1809291726,
+                      "reward":  1541,
+                      "fuelOutCount":  0,
+                      "refuelCount":  66,
+                      "timedOut":  false
+                  },
+                  {
+                      "seed":  183310209,
+                      "reward":  1492,
+                      "fuelOutCount":  0,
+                      "refuelCount":  68,
+                      "timedOut":  false
+                  },
+                  {
+                      "seed":  1323125408,
+                      "reward":  1486,
+                      "fuelOutCount":  0,
+                      "refuelCount":  65,
+                      "timedOut":  false
+                  },
+                  {
+                      "seed":  173555314,
+                      "reward":  1566,
+                      "fuelOutCount":  0,
+                      "refuelCount":  65,
+                      "timedOut":  false
+                  },
+                  {
+                      "seed":  449236748,
+                      "reward":  1246,
+                      "fuelOutCount":  1,
+                      "refuelCount":  54,
+                      "timedOut":  false
+                  },
+                  {
+                      "seed":  1069139987,
+                      "reward":  -1,
+                      "fuelOutCount":  0,
+                      "refuelCount":  52,
+                      "timedOut":  true
+                  },
+                  {
+                      "seed":  200360204,
+                      "reward":  107,
+                      "fuelOutCount":  6,
+                      "refuelCount":  0,
+                      "timedOut":  false
+                  },
+                  {
+                      "seed":  110019,
+                      "reward":  1516,
+                      "fuelOutCount":  0,
+                      "refuelCount":  63,
+                      "timedOut":  false
+                  }
+              ],
+    "completed":  10,
+    "averageReward":  1317.7,
+    "fuelOutSeeds":  2,
+    "zeroRefuelSeeds":  1,
+    "timedOutSeeds":  1
+}
