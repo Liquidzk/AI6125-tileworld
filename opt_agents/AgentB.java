@@ -12,18 +12,6 @@ import tileworld.planners.TWPath;
 import java.util.HashMap;
 import java.util.Map;
 
-/**
- * AgentB — Algorithm B: nearest tile/hole, station discovered, column zigzag.
- *
- * Same MASON communication rule as AgentA:
- *   communicate() ONLY sends — never reads.
- *   think()       reads ALL messages at the start.
- *
- * Station is unknown at start. Learned by direct sensor scan OR from
- * FUEL message sent by any AgentA teammate (who knows it from step 0).
- * Hard sector boundary: only targets tiles/holes inside own sector.
- * After refuel: returns to sector centre before exploring.
- */
 public class AgentB extends TWAgent {
 
     private static final int FUEL_REFUEL_THRESHOLD = 150;
@@ -42,30 +30,30 @@ public class AgentB extends TWAgent {
     private TWPath currentPath;
     private int goalX = -1, goalY = -1;
 
-    // Station discovered through sensor or FUEL message
+    
     private int     stationX     = -1;
     private int     stationY     = -1;
     private boolean stationKnown = false;
 
-    // Hole delivery queue (from AgentA)
+    
     private int     planHoleX = -1, planHoleY = -1;
     private int[][] holeQueue   = new int[3][2];
     private int     holeQueueSz = 0, holeQueueIdx = 0;
 
-    // Column zigzag — clamped to sector
+    
     private int     exploreCol;
     private boolean goingDown = true;
     private int     exploreRow = 0;
     private boolean goingRight = true;
-    private final boolean sweepByRow;  // true = row sweep, false = col sweep
+    private final boolean sweepByRow;  
 
-    // Team knowledge
+    
     private final Map<String, Double> teamTiles  = new HashMap<>();
     private final Map<String, Double> teamHoles  = new HashMap<>();
     private final Map<String, String> claimOwner = new HashMap<>();
     private final Map<String, Double> claimTime  = new HashMap<>();
-    // Blacklist: cells where A* returned null (surrounded by obstacles).
-    // Prevents infinite re-targeting of unreachable tiles/holes.
+    
+    
     private static final int BLACKLIST_EXPIRY = 50;
     private final Map<String, Double> unreachable = new HashMap<>();
 
@@ -95,9 +83,9 @@ public class AgentB extends TWAgent {
                 + " centre=(" + secCX + "," + secCY + ")");
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // COMMUNICATE — SEND ONLY
-    // ─────────────────────────────────────────────────────────────────────
+    
+    
+    
     @Override
     public void communicate() {
         int sr  = tileworld.Parameters.defaultSensorRange;
@@ -106,7 +94,7 @@ public class AgentB extends TWAgent {
         int h   = getEnvironment().getyDimension();
         double now = getEnvironment().schedule.getTime();
 
-        // Scan for station before sending (so we can broadcast if just found)
+        
         if (!stationKnown) scanForStation(ax, ay);
 
         if (stationKnown)
@@ -129,21 +117,21 @@ public class AgentB extends TWAgent {
                     new TeamMessage(name, TeamMessage.CLAIM, goalX, goalY, "target"));
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // THINK — read messages first
-    // ─────────────────────────────────────────────────────────────────────
+    
+    
+    
     @Override
     protected TWThought think() {
         int ax = getX(), ay = getY();
         double now = getEnvironment().schedule.getTime();
 
-        // READ ALL MESSAGES — safe here, all agents have communicated
+        
         readMessages(now);
 
-        // Also try direct scan
+        
         if (!stationKnown) scanForStation(ax, ay);
 
-        // Print individual score every 500 steps and at end
+        
         if ((int)now % 500 == 0 || (int)now == tileworld.Parameters.endTime - 1) {
             System.out.println("[" + name + "] step=" + (int)now
                     + " score=" + this.score
@@ -156,7 +144,7 @@ public class AgentB extends TWAgent {
         double  distStn   = stationKnown
                 ? manhattanDist(ax, ay, stationX, stationY) : Double.MAX_VALUE;
 
-        // Clear arrived goal
+        
         if (goalX >= 0 && ax == goalX && ay == goalY) {
             if (getTileAt(ax,ay)==null && getHoleAt(ax,ay)==null)
                 memory.removeAgentPercept(goalX, goalY);
@@ -164,11 +152,11 @@ public class AgentB extends TWAgent {
             goalX = -1; goalY = -1; currentPath = null;
         }
 
-        // 1. Refuel at station
+        
         if (onStation && fuelLevel < FUEL_REFUEL_THRESHOLD)
             return new TWThought(TWAction.REFUEL, TWDirection.Z);
 
-        // 2. Emergency fuel
+        
         if (stationKnown && fuelLevel <= distStn + FUEL_EMERGENCY_BUFFER) {
             planHoleX = -1; planHoleY = -1;
             holeQueueSz = 0; holeQueueIdx = 0;
@@ -176,8 +164,8 @@ public class AgentB extends TWAgent {
             return headTo(stationX, stationY);
         }
 
-        // 3. Station not yet known — sweep to find it.
-        //    Still score on underfoot tiles/holes (free actions).
+        
+        
         if (!stationKnown) {
             if (hasTile()) {
                 TWHole h = getHoleAt(ax, ay);
@@ -191,7 +179,7 @@ public class AgentB extends TWAgent {
             return preStationSweep();
         }
 
-        // 4. Drop tile on hole
+        
         if (hasTile()) {
             TWHole hole = getHoleAt(ax, ay);
             if (hole != null) {
@@ -204,14 +192,14 @@ public class AgentB extends TWAgent {
             }
         }
 
-        // 5. Pick up tile
+        
         if (carriedTiles.size() < 3) {
             TWTile tile = getTileAt(ax, ay);
             if (tile != null) { currentPath=null; return new TWThought(TWAction.PICKUP, TWDirection.Z); }
         }
 
-        // 5b. On-route opportunistic work during refuel transit.
-        // Grab a nearby tile/hole (≤2 steps detour) while heading to station.
+        
+        
         if (stationKnown && goalX == stationX && goalY == stationY) {
             int W = getEnvironment().getxDimension(), H = getEnvironment().getyDimension();
             if (hasTile()) {
@@ -235,12 +223,12 @@ public class AgentB extends TWAgent {
             }
         }
 
-        // 6. Return to sector if outside (after refuel at distant station)
+        
         if (!inSector(ax, ay)) {
             return setGoalMove(secCX, secCY);
         }
 
-        // 7. Deliver tiles via hole queue (nearest-neighbour TSP, from AgentA)
+        
         if (hasTile()) {
             if (holeQueueSz == 0) buildHoleQueue(ax, ay, now);
             while (holeQueueIdx < holeQueueSz &&
@@ -272,9 +260,9 @@ public class AgentB extends TWAgent {
             }
         }
 
-        // 8. Space available → pair-scored tile (from AgentA)
-        //    U(T,H)=1/(d(agent→T)+d(T→H)) — picks tile closest to a hole.
-        //    Falls back to nearest tile if no holes known.
+        
+        
+        
         if (carriedTiles.size() < 3) {
             if (goalX < 0) {
                 int[] pair = findBestPairB(ax, ay, now);
@@ -291,26 +279,26 @@ public class AgentB extends TWAgent {
             }
         }
 
-        // 9. Return to sector FIRST if outside
+        
         if (!inSector(ax, ay)) {
             return setGoalMove(secCX, secCY);
         }
 
-        // 10. Proactive refuel — dynamic threshold based on distance to station.
+        
         if (stationKnown) {
             int refuelThreshold = Math.max((int)(distStn * 2 + 30), (int)(distStn + FUEL_EMERGENCY_BUFFER + 5));
             if (fuelLevel < refuelThreshold)
                 return headTo(stationX, stationY);
         }
 
-        // 11. Explore sector
+        
         currentPath = null; goalX = -1; goalY = -1;
         return explore();
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // ACT
-    // ─────────────────────────────────────────────────────────────────────
+    
+    
+    
     @Override
     protected void act(TWThought t) {
         switch (t.getAction()) {
@@ -330,9 +318,9 @@ public class AgentB extends TWAgent {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // MESSAGE READING (called at start of think())
-    // ─────────────────────────────────────────────────────────────────────
+    
+    
+    
     private void readMessages(double now) {
         for (Message raw : getEnvironment().getMessages()) {
             if (raw.getFrom().equals(name)) continue;
@@ -363,10 +351,10 @@ public class AgentB extends TWAgent {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // SCORING — strict sector boundary
-    // ─────────────────────────────────────────────────────────────────────
-    // ── HOLE QUEUE (from AgentA) ─────────────────────────────────────────
+    
+    
+    
+    
     private void buildHoleQueue(int ax, int ay, double now) {
         holeQueueSz = 0; holeQueueIdx = 0;
         int w = getEnvironment().getxDimension(), h = getEnvironment().getyDimension();
@@ -392,8 +380,8 @@ public class AgentB extends TWAgent {
         }
     }
 
-    // ── PAIR SCORING (from AgentA) ───────────────────────────────────────
-    // Returns [tileX, tileY, holeX, holeY] or [tileX, tileY, -1, -1] fallback
+    
+    
     private int[] findBestPairB(int ax, int ay, double now) {
         int w = getEnvironment().getxDimension(), h = getEnvironment().getyDimension();
         int[] best = null; double bestU = -1;
@@ -421,7 +409,7 @@ public class AgentB extends TWAgent {
             if (u > bestU) { bestU = u; best = new int[]{tx, ty, bHx, bHy}; }
         }
         if (best != null) return best;
-        // Fallback: nearest unclaimed in-sector tile
+        
         double bd = Double.MAX_VALUE; int[] bt = null;
         for (int tx = 0; tx < w; tx++) for (int ty = 0; ty < h; ty++) {
             if (!inSector(tx, ty)) continue;
@@ -497,22 +485,22 @@ public class AgentB extends TWAgent {
         return best;
     }
 
-    // ── PRE-STATION RECTANGLE CIRCUIT SWEEP ─────────────────────────────
-    // Explores the sector in concentric rectangles, outer first, shrinking
-    // inward by sr*2 each layer until the whole sector is covered.
-    //
-    // Each layer visits 4 corners in order:
-    //   TL=(secXMin+pad, secYMin+pad)  corner 0
-    //   TR=(secXMax-pad, secYMin+pad)  corner 1
-    //   BR=(secXMax-pad, secYMax-pad)  corner 2
-    //   BL=(secXMin+pad, secYMax-pad)  corner 3
-    //
-    // pad = sr + layer * sr*2  → layers at 3, 9, 15, ...
-    // Spacing = sr*2 = 6 matches the 7-wide sensor so no cell is missed.
-    //
-    // Navigation to each waypoint uses A* (same as main algorithm).
-    // If A* fails (waypoint blocked), advance to the next corner so the
-    // agent never gets stuck waiting for an unreachable point.
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     private int circuitLayer  = 0;
     private int circuitCorner = 0;
     private TWPath circuitPath = null;
@@ -522,17 +510,17 @@ public class AgentB extends TWAgent {
         int sr = tileworld.Parameters.defaultSensorRange;
         int ax = getX(), ay = getY();
 
-        // Get current waypoint
+        
         int[] target = circuitTarget(circuitLayer, circuitCorner, sr);
 
-        // Layer degenerate (sector too small for this layer) — restart
+        
         if (target == null) {
             circuitLayer = 0; circuitCorner = 0; circuitPath = null;
             target = circuitTarget(0, 0, sr);
             if (target == null) return new TWThought(TWAction.MOVE, anyOpenDir());
         }
 
-        // Arrived at waypoint — advance to next corner
+        
         if (ax == target[0] && ay == target[1]) {
             circuitCorner++;
             if (circuitCorner > 3) {
@@ -547,8 +535,8 @@ public class AgentB extends TWAgent {
 
         int tx = target[0], ty = target[1];
 
-        // Use A* to navigate to waypoint — handles obstacles automatically.
-        // If target changes, replan.
+        
+        
         if (circuitGoalX != tx || circuitGoalY != ty) {
             circuitPath = null;
             circuitGoalX = tx; circuitGoalY = ty;
@@ -560,8 +548,8 @@ public class AgentB extends TWAgent {
             return new TWThought(TWAction.MOVE, circuitPath.popNext().getDirection());
         }
 
-        // A* failed — waypoint is completely surrounded by obstacles.
-        // Skip this corner and advance to the next one rather than waiting.
+        
+        
         circuitCorner++;
         if (circuitCorner > 3) {
             circuitCorner = 0;
@@ -569,35 +557,35 @@ public class AgentB extends TWAgent {
             if (circuitTarget(circuitLayer, 0, sr) == null) circuitLayer = 0;
         }
         circuitPath = null;
-        // Fall back to any open direction this step
+        
         return new TWThought(TWAction.MOVE, anyOpenDir());
     }
 
-    // Returns the (x,y) waypoint for given layer and corner, or null if degenerate
+    
     private int[] circuitTarget(int layer, int corner, int sr) {
         int pad = sr + layer * sr * 2;
         int x1 = secXMin + pad, x2 = secXMax - pad;
         int y1 = secYMin + pad, y2 = secYMax - pad;
         if (x2 <= x1 || y2 <= y1) return null;
         switch (corner) {
-            case 0: return new int[]{x1, y1};  // TL
-            case 1: return new int[]{x2, y1};  // TR
-            case 2: return new int[]{x2, y2};  // BR
-            case 3: return new int[]{x1, y2};  // BL
+            case 0: return new int[]{x1, y1};  
+            case 1: return new int[]{x2, y1};  
+            case 2: return new int[]{x2, y2};  
+            case 3: return new int[]{x1, y2};  
             default: return null;
         }
     }
 
-    // ── EXPLORATION ──────────────────────────────────────────────────────
-    // Auto-axis sweep: dynamically picks columns or rows based on which axis
-    // completes the sector sweep in fewer steps. This guarantees full coverage
-    // within the fuel budget for ANY grid size.
-    //
-    //   Column sweep: ceil(sw/(sr*2)) columns, sh steps each  → sw narrow sectors
-    //   Row sweep:    ceil(sh/(sr*2)) rows,    sw steps each  → sh narrow sectors
-    //
-    // The shorter total is always chosen at agent construction time.
-    // When shrink=true (pre-station), bounds are tightened by sr on each side.
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     private TWThought explore() { return explore(false); }
     private TWThought explore(boolean shrink) {
         int sr  = tileworld.Parameters.defaultSensorRange;
@@ -605,14 +593,14 @@ public class AgentB extends TWAgent {
         int h   = getEnvironment().getyDimension();
         int ax  = getX(), ay = getY();
 
-        // Compute effective bounds (shrink inward by sr when pre-station)
+        
         int pad    = shrink ? sr : 0;
         int effXMin = Math.min(secXMin + pad, secCX);
         int effXMax = Math.max(secXMax - pad, secCX);
         int effYMin = Math.min(secYMin + pad, secCY);
         int effYMax = Math.max(secYMax - pad, secCY);
 
-        // Reactive: if any tile/hole is visible inside effective sector, go to it
+        
         for (int x = Math.max(0, ax-sr); x <= Math.min(w-1, ax+sr); x++)
             for (int y = Math.max(0, ay-sr); y <= Math.min(h-1, ay+sr); y++) {
                 if (x < effXMin || x > effXMax || y < effYMin || y > effYMax) continue;
@@ -622,18 +610,18 @@ public class AgentB extends TWAgent {
             }
 
         if (sweepByRow) {
-            // ── ROW SWEEP: move E/W along each row, step N/S between rows ─────
+            
             int rowStart = effYMin / (sr * 2);
             int rowEnd   = effYMax / (sr * 2);
             if (exploreRow < rowStart) exploreRow = rowStart;
             if (exploreRow > rowEnd)   exploreRow = rowStart;
 
-            // Target y-centre of current row (clamped to effective bounds)
+            
             int targetY = Math.max(Math.min(exploreRow * sr * 2 + sr, effYMax), effYMin);
             if (Math.abs(ay - targetY) > 1)
                 return new TWThought(TWAction.MOVE, dirTo(ax, targetY));
 
-            // At row — flip x-direction at effective sector left/right edges
+            
             int xLeft = effXMin + 1, xRight = effXMax - 1;
             if (goingRight && ax >= xRight) {
                 goingRight = false; exploreRow++;
@@ -655,7 +643,7 @@ public class AgentB extends TWAgent {
             return new TWThought(TWAction.MOVE, dir);
 
         } else {
-            // ── COLUMN SWEEP: move N/S along each column, step E/W between cols ──
+            
             int colStart = effXMin / (sr * 2);
             int colEnd   = effXMax / (sr * 2);
             if (exploreCol < colStart) exploreCol = colStart;
@@ -687,9 +675,9 @@ public class AgentB extends TWAgent {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // NAVIGATION
-    // ─────────────────────────────────────────────────────────────────────
+    
+    
+    
     private TWThought setGoalMove(int tx, int ty) {
         if (goalX != tx || goalY != ty) {
             currentPath = null; goalX = tx; goalY = ty; recordClaim(tx, ty);
@@ -702,8 +690,8 @@ public class AgentB extends TWAgent {
         if (currentPath == null || !currentPath.hasNext())
             currentPath = pathGen.findPath(getX(), getY(), tx, ty);
         if (currentPath == null || !currentPath.hasNext()) {
-            // A* failed — target is unreachable (surrounded by obstacles).
-            // Blacklist it so we don't re-target it next step.
+            
+            
             unreachable.put(key(tx, ty), getEnvironment().schedule.getTime());
             currentPath = null; goalX = -1; goalY = -1; return null;
         }
@@ -716,9 +704,9 @@ public class AgentB extends TWAgent {
         return t != null ? t : new TWThought(TWAction.MOVE, dirTo(tx, ty));
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // STATION DISCOVERY
-    // ─────────────────────────────────────────────────────────────────────
+    
+    
+    
     private void scanForStation(int ax, int ay) {
         int sr = tileworld.Parameters.defaultSensorRange;
         int mapW = getEnvironment().getxDimension(), mapH = getEnvironment().getyDimension();
@@ -733,9 +721,9 @@ public class AgentB extends TWAgent {
             }
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // CLAIMS
-    // ─────────────────────────────────────────────────────────────────────
+    
+    
+    
     private void recordClaim(int x, int y) {
         claimOwner.put(key(x,y), name); claimTime.put(key(x,y), getEnvironment().schedule.getTime());
     }
@@ -750,9 +738,9 @@ public class AgentB extends TWAgent {
         return !owner.equals(name);
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // TILE/HOLE KNOWLEDGE
-    // ─────────────────────────────────────────────────────────────────────
+    
+    
+    
     private boolean isTileKnown(int x, int y, double now) {
         Object mem = memory.getMemoryGrid().get(x, y);
         if (mem instanceof TWTile && getEnvironment().getObjectGrid().get(x,y) != null) return true;
@@ -766,9 +754,9 @@ public class AgentB extends TWAgent {
         return t != null && now - t <= OBS_EXPIRY && getEnvironment().getObjectGrid().get(x,y) instanceof TWHole;
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // UTILITIES
-    // ─────────────────────────────────────────────────────────────────────
+    
+    
+    
     private boolean isUnreachable(int x, int y, double now) {
         Double t = unreachable.get(key(x, y));
         if (t == null) return false;
